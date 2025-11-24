@@ -1,0 +1,19 @@
+# vocalyx-enrichment/requirements.txt
+# Worker Celery pour l'enrichissement des transcriptions avec LLM
+
+# Celery & Redis
+celery==5.5.3
+redis==7.0.1
+
+# Client HTTP (pour communiquer avec l'API)
+httpx==0.28.1
+requests>=2.32.5
+
+# LLM - CPU Only
+# Utilisation de llama-cpp-python pour LLM local GGUF (CPU)
+llama-cpp-python==0.2.70
+
+# Utilitaires
+python-dotenv==1.2.1
+psutil==5.9.8
+
