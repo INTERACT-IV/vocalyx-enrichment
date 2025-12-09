@@ -317,9 +317,28 @@ def enrich_transcription_task(self, transcription_id: str, use_distributed: bool
                     enrichment_prompts = json.loads(enrichment_prompts_str)
                 else:
                     enrichment_prompts = enrichment_prompts_str
-                logger.info(f"[{transcription_id}] 📝 Using custom enrichment prompts: {list(enrichment_prompts.keys())}")
+                logger.info(f"[{transcription_id}] 📝 PROMPTS | Reçus depuis l'interface: {list(enrichment_prompts.keys())}")
+                for key, value in enrichment_prompts.items():
+                    logger.info(f"[{transcription_id}] 📝 PROMPTS | '{key}': {value[:100]}..." if len(value) > 100 else f"[{transcription_id}] 📝 PROMPTS | '{key}': {value}")
             except Exception as e:
                 logger.warning(f"[{transcription_id}] ⚠️ Failed to parse enrichment_prompts: {e}, using default")
+                enrichment_prompts = None
+        
+        # Loguer les prompts par défaut qui seront utilisés
+        from enrichment_service import DEFAULT_ENRICHMENT_PROMPTS
+        if enrichment_prompts:
+            # Fusionner pour voir ce qui sera utilisé
+            final_prompts = DEFAULT_ENRICHMENT_PROMPTS.copy()
+            final_prompts.update(enrichment_prompts)
+            logger.info(f"[{transcription_id}] 📝 PROMPTS | Prompts finaux (défaut + interface): {list(final_prompts.keys())}")
+            for key in final_prompts.keys():
+                source = "surchargé par interface" if key in enrichment_prompts else "par défaut"
+                prompt_text = enrichment_prompts.get(key, DEFAULT_ENRICHMENT_PROMPTS.get(key, ""))
+                logger.info(f"[{transcription_id}] 📝 PROMPTS | '{key}' ({source}): {prompt_text[:100]}..." if len(prompt_text) > 100 else f"[{transcription_id}] 📝 PROMPTS | '{key}' ({source}): {prompt_text}")
+        else:
+            logger.info(f"[{transcription_id}] 📝 PROMPTS | Utilisation des prompts par défaut uniquement: {list(DEFAULT_ENRICHMENT_PROMPTS.keys())}")
+            for key, value in DEFAULT_ENRICHMENT_PROMPTS.items():
+                logger.info(f"[{transcription_id}] 📝 PROMPTS | '{key}' (par défaut): {value[:100]}..." if len(value) > 100 else f"[{transcription_id}] 📝 PROMPTS | '{key}' (par défaut): {value}")
         
         # Enrichir tous les segments
         logger.info(f"[{transcription_id}] 🎤 Starting enrichment with LLM...")
@@ -336,6 +355,71 @@ def enrich_transcription_task(self, transcription_id: str, use_distributed: bool
         # Construire le texte enrichi complet
         enriched_text = " ".join(seg.get('enriched_text', seg.get('text', '')) for seg in enriched_segments)
         
+        # Générer les métadonnées (titre, résumé, score, bullet points)
+        logger.info(f"[{transcription_id}] 📊 Generating metadata (title, summary, satisfaction, bullet_points)...")
+        metadata_start_time = time.time()
+        
+        # Obtenir les prompts finaux
+        from enrichment_service import DEFAULT_ENRICHMENT_PROMPTS
+        final_prompts = DEFAULT_ENRICHMENT_PROMPTS.copy()
+        if enrichment_prompts:
+            final_prompts.update(enrichment_prompts)
+        
+        metadata = {}
+        
+        # Générer le titre
+        try:
+            logger.info(f"[{transcription_id}] 📊 Generating title...")
+            title_response = enrichment_service.generate_metadata(enriched_text, "title", final_prompts, max_tokens=50)
+            metadata['title'] = title_response.strip()
+            logger.info(f"[{transcription_id}] ✅ Title generated: {metadata['title'][:50]}...")
+        except Exception as e:
+            logger.warning(f"[{transcription_id}] ⚠️ Failed to generate title: {e}")
+            metadata['title'] = None
+        
+        # Générer le résumé
+        try:
+            logger.info(f"[{transcription_id}] 📊 Generating summary...")
+            summary_response = enrichment_service.generate_metadata(enriched_text, "summary", final_prompts, max_tokens=150)
+            metadata['summary'] = summary_response.strip()
+            logger.info(f"[{transcription_id}] ✅ Summary generated: {metadata['summary'][:100]}...")
+        except Exception as e:
+            logger.warning(f"[{transcription_id}] ⚠️ Failed to generate summary: {e}")
+            metadata['summary'] = None
+        
+        # Générer le score de satisfaction
+        try:
+            logger.info(f"[{transcription_id}] 📊 Generating satisfaction score...")
+            satisfaction_response = enrichment_service.generate_metadata(enriched_text, "satisfaction", final_prompts, max_tokens=100)
+            # Parser le JSON
+            import json as json_lib
+            try:
+                metadata['satisfaction'] = json_lib.loads(satisfaction_response.strip())
+            except:
+                metadata['satisfaction'] = {"score": None, "justification": satisfaction_response.strip()}
+            logger.info(f"[{transcription_id}] ✅ Satisfaction score generated: {metadata['satisfaction']}")
+        except Exception as e:
+            logger.warning(f"[{transcription_id}] ⚠️ Failed to generate satisfaction score: {e}")
+            metadata['satisfaction'] = None
+        
+        # Générer les bullet points
+        try:
+            logger.info(f"[{transcription_id}] 📊 Generating bullet points...")
+            bullet_response = enrichment_service.generate_metadata(enriched_text, "bullet_points", final_prompts, max_tokens=200)
+            # Parser le JSON
+            import json as json_lib
+            try:
+                metadata['bullet_points'] = json_lib.loads(bullet_response.strip())
+            except:
+                metadata['bullet_points'] = {"points": [bullet_response.strip()]}
+            logger.info(f"[{transcription_id}] ✅ Bullet points generated: {len(metadata['bullet_points'].get('points', []))} points")
+        except Exception as e:
+            logger.warning(f"[{transcription_id}] ⚠️ Failed to generate bullet points: {e}")
+            metadata['bullet_points'] = None
+        
+        metadata_time = round(time.time() - metadata_start_time, 2)
+        logger.info(f"[{transcription_id}] ✅ Metadata generation completed in {metadata_time}s")
+        
         # Mettre à jour avec les résultats
         logger.info(f"[{transcription_id}] 💾 Saving results to API...")
         update_data = {
@@ -343,7 +427,8 @@ def enrich_transcription_task(self, transcription_id: str, use_distributed: bool
             "enrichment_status": "done",
             "enriched_text": enriched_text,
             "enriched_segments": json.dumps(enriched_segments),
-            "enrichment_processing_time": processing_time
+            "enrichment_processing_time": processing_time,
+            "enrichment_metadata": json.dumps(metadata)  # Ajouter les métadonnées
         }
         logger.info(f"[{transcription_id}] 📤 API Update payload: {json.dumps({k: v if k != 'enriched_segments' else f'<{len(enriched_segments)} segments>' for k, v in update_data.items()})}")
         

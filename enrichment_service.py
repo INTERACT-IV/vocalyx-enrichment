@@ -24,6 +24,15 @@ if not PSUTIL_AVAILABLE:
     logger.warning("⚠️ psutil not available, memory monitoring disabled")
 
 
+# Prompts par défaut pour l'enrichissement
+DEFAULT_ENRICHMENT_PROMPTS = {
+    "title": "Génère un titre court et accrocheur (maximum 10 mots) pour cette transcription.",
+    "summary": "Génère un résumé concis de moins de 100 mots pour cette transcription.",
+    "satisfaction": "Analyse cette transcription et attribue un score de satisfaction client de 1 à 10. Justifie brièvement ton score. Format JSON: {\"score\": nombre, \"justification\": \"texte\"}",
+    "bullet_points": "Extrais les points clés de cette transcription sous forme de puces. Format JSON: {\"points\": [\"point 1\", \"point 2\", ...]}"
+}
+
+
 class EnrichmentService:
     """Service d'enrichissement utilisant des modèles LLM via llama-cpp-python"""
     
@@ -190,8 +199,8 @@ class EnrichmentService:
         try:
             self._load_model()
             
-            # Construire le prompt
-            prompt = self._build_prompt(text, context, custom_prompts)
+            # Construire le prompt pour l'enrichissement
+            prompt = self._build_prompt(text, task_type="enrichment", context=context, custom_prompts=custom_prompts)
             
             # Déterminer les tokens d'arrêt selon le modèle
             model_lower = self.model_name.lower()
@@ -208,14 +217,15 @@ class EnrichmentService:
             
             # Générer avec le modèle
             # Utiliser les paramètres optimisés pour CPU
-            # Temperature plus basse pour être plus déterministe et moins créatif
+            # Temperature très basse pour être déterministe et éviter les hallucinations
+            max_tokens_for_text = min(self.max_tokens, max(256, len(text.split()) * 2))
             response = self.model(
                 prompt,
-                max_tokens=min(self.max_tokens, len(text.split()) * 2),  # Limiter selon la longueur du texte
-                temperature=0.3,  # Plus bas pour être plus déterministe (correction plutôt que création)
+                max_tokens=max_tokens_for_text,
+                temperature=0.1,  # Très bas pour être déterministe (correction plutôt que création)
                 top_p=0.9,
                 top_k=40,
-                repeat_penalty=1.1,  # Éviter la répétition
+                repeat_penalty=1.3,  # Forte pénalité pour éviter la répétition
                 stop=stop_tokens,  # Tokens d'arrêt adaptés au modèle
                 echo=False,  # Ne pas retourner le prompt
             )
@@ -332,15 +342,38 @@ class EnrichmentService:
             # En cas d'erreur, retourner les segments originaux
             return segments
     
-    def _build_prompt(self, text: str, context: Optional[str] = None, custom_prompts: Optional[Dict] = None) -> str:
+    def _get_enrichment_prompts(self, custom_prompts: Optional[Dict] = None) -> Dict[str, str]:
+        """
+        Fusionne les prompts par défaut avec les prompts personnalisés.
+        
+        Args:
+            custom_prompts: Prompts personnalisés depuis l'API
+            
+        Returns:
+            Dict avec tous les prompts (par défaut + personnalisés)
+        """
+        # Commencer avec les prompts par défaut
+        prompts = DEFAULT_ENRICHMENT_PROMPTS.copy()
+        
+        # Si des prompts personnalisés sont fournis, les fusionner (ils écrasent les défauts)
+        if custom_prompts:
+            prompts.update(custom_prompts)
+            logger.debug(f"📝 Prompts fusionnés: {list(prompts.keys())} (personnalisés: {list(custom_prompts.keys())})")
+        else:
+            logger.debug(f"📝 Utilisation des prompts par défaut uniquement: {list(prompts.keys())}")
+        
+        return prompts
+    
+    def _build_prompt(self, text: str, task_type: str = "enrichment", context: Optional[str] = None, custom_prompts: Optional[Dict] = None) -> str:
         """
         Construit le prompt pour le modèle LLM.
         Adapté pour les modèles instruct (TinyLlama, Phi-3, Mistral, Llama, etc.)
         
         Args:
-            text: Texte à enrichir
+            text: Texte à traiter
+            task_type: Type de tâche ("enrichment", "title", "summary", "satisfaction", "bullet_points")
             context: Contexte optionnel
-            custom_prompts: Prompts personnalisés depuis l'API (dict avec title, summary, etc.)
+            custom_prompts: Prompts personnalisés depuis l'API
             
         Returns:
             Prompt formaté selon le format du modèle
@@ -348,32 +381,33 @@ class EnrichmentService:
         # Détecter le type de modèle depuis le nom
         model_lower = self.model_name.lower()
         
-        # Instructions précises pour l'enrichissement
-        # Le modèle doit CORRIGER et AMÉLIORER, pas inventer
-        base_instructions = (
-            "Tu es un assistant qui CORRIGE et AMÉLIORE des transcriptions audio en français. "
-            "Ta tâche est de :\n"
-            "1. Corriger les erreurs d'orthographe et de grammaire\n"
-            "2. Améliorer la ponctuation (points, virgules, majuscules)\n"
-            "3. Améliorer la structure (majuscules en début de phrase, paragraphes si nécessaire)\n"
-            "4. CONSERVER EXACTEMENT le sens original - ne rien ajouter, ne rien inventer\n"
-            "5. Retourner UNIQUEMENT le texte corrigé, sans explications ni commentaires"
-        )
+        # Obtenir les prompts (défaut + personnalisés)
+        prompts = self._get_enrichment_prompts(custom_prompts)
         
-        # Si des prompts personnalisés sont fournis, les utiliser
-        if custom_prompts:
-            # Pour l'instant, on utilise le prompt de base mais on pourrait adapter selon le type
-            # (title, summary, satisfaction, bullet_points)
-            task_instruction = custom_prompts.get('summary', 
-                "Corrige et améliore ce texte de transcription en conservant le sens original:")
-        else:
+        # Instructions selon le type de tâche
+        if task_type == "enrichment":
+            # Instructions précises pour l'enrichissement
+            # Le modèle doit CORRIGER et AMÉLIORER, pas inventer
+            base_instructions = (
+                "Tu es un assistant qui CORRIGE et AMÉLIORE des transcriptions audio en français. "
+                "Ta tâche est de :\n"
+                "1. Corriger les erreurs d'orthographe et de grammaire\n"
+                "2. Améliorer la ponctuation (points, virgules, majuscules)\n"
+                "3. Améliorer la structure (majuscules en début de phrase, paragraphes si nécessaire)\n"
+                "4. CONSERVER EXACTEMENT le sens original - ne rien ajouter, ne rien inventer\n"
+                "5. Retourner UNIQUEMENT le texte corrigé, sans explications ni commentaires, sans répéter les instructions"
+            )
             task_instruction = "Corrige et améliore ce texte de transcription en conservant le sens original:"
+        else:
+            # Pour les autres tâches (titre, résumé, etc.), utiliser le prompt spécifique
+            base_instructions = "Tu es un assistant qui analyse des transcriptions audio en français."
+            task_instruction = prompts.get(task_type, f"Tâche: {task_type}")
         
         # Construire le prompt utilisateur
         if context:
-            user_prompt = f"{task_instruction}\n\nContexte précédent: {context}\n\nTexte à corriger:\n{text}"
+            user_prompt = f"{task_instruction}\n\nContexte précédent: {context}\n\nTexte:\n{text}"
         else:
-            user_prompt = f"{task_instruction}\n\n{text}"
+            user_prompt = f"{task_instruction}\n\nTexte:\n{text}"
         
         # Format pour TinyLlama (utilise <|system|>, </s>, <|user|>, <|assistant|>)
         if 'tinyllama' in model_lower or 'tiny-llama' in model_lower:
@@ -396,6 +430,83 @@ class EnrichmentService:
             prompt = f"<|im_start|>system\n{base_instructions}<|im_end|>\n<|im_start|>user\n{user_prompt}<|im_end|>\n<|im_start|>assistant\n"
         
         return prompt
+    
+    def generate_metadata(self, text: str, task_type: str, prompts: Dict[str, str], max_tokens: int = 100) -> str:
+        """
+        Génère des métadonnées (titre, résumé, score, bullet points) à partir du texte enrichi.
+        
+        Args:
+            text: Texte enrichi
+            task_type: Type de métadonnée ("title", "summary", "satisfaction", "bullet_points")
+            prompts: Dict avec les prompts (par défaut + personnalisés)
+            max_tokens: Nombre maximum de tokens à générer
+            
+        Returns:
+            Texte généré (métadonnée)
+        """
+        if not text or not text.strip():
+            return ""
+        
+        try:
+            self._load_model()
+            
+            # Construire le prompt pour cette tâche
+            prompt = self._build_prompt(text, task_type=task_type, custom_prompts=prompts)
+            
+            # Déterminer les tokens d'arrêt selon le modèle
+            model_lower = self.model_name.lower()
+            if 'tinyllama' in model_lower or 'tiny-llama' in model_lower:
+                stop_tokens = ["</s>", "<|user|>", "<|system|>", "<|assistant|>", "\n\n"]
+            elif 'phi-3' in model_lower or 'phi3' in model_lower:
+                stop_tokens = ["<|end|>", "<|user|>", "<|system|>", "<|assistant|>", "\n\n"]
+            elif 'mistral' in model_lower:
+                stop_tokens = ["</s>", "[INST]", "[/INST]", "\n\n"]
+            elif 'llama-3' in model_lower or 'llama3' in model_lower:
+                stop_tokens = ["<|eot_id|>", "<|start_header_id|>", "<|end_header_id|>", "\n\n"]
+            else:
+                stop_tokens = ["<|im_end|>", "<|im_start|>", "</s>", "\n\n"]
+            
+            # Générer avec le modèle
+            response = self.model(
+                prompt,
+                max_tokens=max_tokens,
+                temperature=0.5,  # Un peu plus créatif pour les métadonnées
+                top_p=0.9,
+                top_k=40,
+                repeat_penalty=1.2,
+                stop=stop_tokens,
+                echo=False,
+            )
+            
+            # Extraire le texte généré
+            if isinstance(response, dict):
+                generated_text = response.get('choices', [{}])[0].get('text', '').strip()
+            elif hasattr(response, 'choices') and len(response.choices) > 0:
+                generated_text = response.choices[0].text.strip()
+            else:
+                generated_text = str(response).strip()
+            
+            # Nettoyer les tokens spéciaux
+            tokens_to_remove = [
+                '</s>', '<|end|>', '<|user|>', '<|system|>', '<|assistant|>',
+                '<|im_start|>', '<|im_end|>', '<|eot_id|>',
+                '<|start_header_id|>', '<|end_header_id|>',
+                '[INST]', '[/INST]', '<s>', '</s>'
+            ]
+            for token in tokens_to_remove:
+                generated_text = generated_text.replace(token, '')
+            
+            # Nettoyer les espaces
+            generated_text = re.sub(r'\n{2,}', '\n', generated_text)
+            generated_text = re.sub(r' {2,}', ' ', generated_text)
+            generated_text = generated_text.strip()
+            
+            logger.debug(f"✅ Metadata '{task_type}' generated: {len(generated_text)} chars")
+            return generated_text
+            
+        except Exception as e:
+            logger.error(f"❌ Error generating metadata '{task_type}': {e}", exc_info=True)
+            return ""
     
     def cleanup(self):
         """Nettoie les ressources du modèle"""
