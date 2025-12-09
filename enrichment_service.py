@@ -292,19 +292,19 @@ class EnrichmentService:
             custom_prompt: Prompt personnalisé (optionnel)
             
         Returns:
-            dict: {"score": int, "justification": str}
+            dict: {"score": int}
         """
         if not transcription_text or not transcription_text.strip():
-            return {"score": 5, "justification": "Texte vide"}
+            return {"score": 5}
         
-        prompt = custom_prompt or "Analyse cette transcription et attribue un score de satisfaction client de 1 à 10. Justifie brièvement ton score. Format JSON: {\"score\": nombre, \"justification\": \"texte\"}"
+        prompt = custom_prompt or "Analyse cette transcription et attribue un score de satisfaction client de 1 à 10. Format JSON: {\"score\": nombre}"
         full_prompt = f"{prompt}\n\n{transcription_text}"
         
         try:
             response = self._generate_text(full_prompt, max_tokens=100, temperature=0.5)
             
             if not response or not response.strip():
-                return {"score": 5, "justification": "Réponse vide"}
+                return {"score": 5}
             
             # Essayer d'extraire le JSON de la réponse (chercher le JSON le plus externe)
             try:
