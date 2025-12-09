@@ -41,10 +41,29 @@ default_ttl = 3600
 
 [LLM]
 # Modèle LLM à utiliser (fichier .gguf ou nom de modèle recommandé)
-# Modèles recommandés: phi-3-mini, phi-3-medium, mistral-7b-instruct, llama-3-8b-instruct, gemma-2b
-# Recommandé: phi-3-mini (léger et rapide sur CPU, ~2.3 GB)
+# 
+# MODÈLES ULTRA-LÉGERS (< 1.5 GB) - Très rapides, qualité réduite:
+#   - tinyllama-q2: 0.48 GB - Ultra-rapide, qualité réduite (le plus léger)
+#   - tinyllama-q3: 0.55 GB - Ultra-rapide, bon compromis
+#   - tinyllama: 0.67 GB - Ultra-rapide, bon compromis qualité/vitesse (Q4_K_M, recommandé)
+#   - tinyllama-q5: 0.78 GB - Rapide, meilleure qualité
+#   - phi-3-mini-q2: 1.2 GB - Ultra-léger, très rapide
+#   - gemma-2b: 1.4 GB - Très léger, très rapide (recommandé pour CPU faible)
+#   - phi-2: 1.6 GB - Très léger, bon pour raisonnement
+#   - phi-3-mini-q3: 1.6 GB - Léger, bon compromis
+#
+# MODÈLES LÉGERS (1.5-3 GB) - Équilibre vitesse/qualité:
+#   - phi-3-mini: 2.3 GB - Léger et rapide, idéal pour CPU (défaut recommandé)
+#
+# MODÈLES MOYENS (3-5 GB) - Meilleure qualité, plus lent:
+#   - mistral-7b-instruct: 4.1 GB - Bon équilibre qualité/vitesse
+#   - llama-3-8b-instruct: 4.6 GB - Excellente qualité
+#
+# MODÈLES LOURDS (> 5 GB) - Meilleure qualité, lent:
+#   - phi-3-medium: 7.0 GB - Meilleure qualité, plus lent
+#
 # Le modèle sera cherché dans shared/models/enrichment/ puis téléchargé si absent
-model = phi-3-mini
+model = tinyllama
 
 # Répertoire des modèles (par défaut: shared/models/enrichment pour structure vocalyx-all)
 # models_dir = ./shared/models/enrichment
