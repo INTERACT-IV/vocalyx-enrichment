@@ -753,5 +753,8 @@ if __name__ == "__main__":
         'worker',
         f'--loglevel={config.log_level.lower()}',
         f'--concurrency={config.max_workers}',
-        f'--hostname={config.instance_name}@%h'
+        f'--hostname={config.instance_name}@%h',
+        '--without-gossip',
+        '--without-mingle',
+        '-Q', 'enrichment'
     ])
