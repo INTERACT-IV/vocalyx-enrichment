@@ -5,7 +5,8 @@ celery>=5.3.0
 redis>=5.0.0
 
 # API Client
-requests>=2.31.0
+# httpx est utilisé à la place de requests pour de meilleures performances
+httpx>=0.25.0
 
 # System monitoring
 psutil>=5.9.0

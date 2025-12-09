@@ -16,17 +16,22 @@ class VocalyxAPIClient:
     """
     
     def __init__(self, config):
-        self.base_url = config.api_url.rstrip('/')
-        self.internal_key = config.internal_api_key
-        self.timeout = httpx.Timeout(60.0, connect=5.0)
+        # Utiliser api_url (cohérent avec transcription) avec fallback
+        self.base_url = getattr(config, 'api_url', getattr(config, 'vocalyx_api_url', 'http://localhost:8000')).rstrip('/')
+        self.internal_key = getattr(config, 'internal_api_key', '')
+        api_timeout = getattr(config, 'api_timeout', 60)
+        self.timeout = httpx.Timeout(float(api_timeout), connect=5.0)
         
         # Client synchrone (suffisant pour le worker)
         self.client = httpx.Client(timeout=self.timeout)
         
         logger.info(f"API Client initialized: {self.base_url}")
         
-        # Vérifier la connexion à l'API au démarrage
-        self._verify_connection()
+        # Vérifier la connexion à l'API au démarrage (non bloquant)
+        try:
+            self._verify_connection()
+        except Exception as e:
+            logger.warning(f"⚠️ Could not verify API connection at startup: {e}")
     
     def _verify_connection(self):
         """Vérifie la connexion à l'API au démarrage"""
@@ -48,8 +53,10 @@ class VocalyxAPIClient:
     
     def _get_headers(self) -> Dict[str, str]:
         """Génère les headers d'authentification interne"""
+        # Utiliser X-Internal-API-Key pour compatibilité avec l'API
         return {
-            "X-Internal-Key": self.internal_key
+            "X-Internal-API-Key": self.internal_key,
+            "Content-Type": "application/json"
         }
     
     def get_transcription(self, transcription_id: str) -> Optional[Dict]:

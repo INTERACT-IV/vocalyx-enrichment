@@ -19,7 +19,10 @@ class Config:
         """
         # Valeurs par défaut
         self.instance_name = os.getenv('INSTANCE_NAME', 'enrichment-worker-01')
-        self.vocalyx_api_url = os.getenv('VOCALYX_API_URL', 'http://localhost:8000')
+        # API URL - utiliser api_url pour cohérence avec transcription
+        self.api_url = os.getenv('VOCALYX_API_URL', 'http://localhost:8000')
+        # Alias pour compatibilité
+        self.vocalyx_api_url = self.api_url
         self.celery_broker_url = os.getenv('CELERY_BROKER_URL', 'redis://localhost:6379/0')
         self.celery_result_backend = os.getenv('CELERY_RESULT_BACKEND', 'redis://localhost:6379/0')
         self.redis_enrichment_url = os.getenv('REDIS_ENRICHMENT_URL', 'redis://localhost:6379/3')
@@ -76,7 +79,9 @@ class Config:
         
         # API
         if config.has_section('API'):
-            self.vocalyx_api_url = config.get('API', 'url', fallback=self.vocalyx_api_url)
+            self.api_url = config.get('API', 'url', fallback=self.api_url)
+            # Alias pour compatibilité
+            self.vocalyx_api_url = self.api_url
             self.api_timeout = config.getint('API', 'timeout', fallback=self.api_timeout)
         
         # CELERY
