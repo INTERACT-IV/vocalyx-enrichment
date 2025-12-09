@@ -371,6 +371,7 @@ def enrich_transcription_task(self, transcription_id: str, use_distributed: bool
         if not enrichment_requested:
             logger.warning(f"[{transcription_id}] ⚠️ Enrichment not requested, skipping metadata generation")
             metadata = {}
+            processing_time = round(time.time() - start_time, 2)
         else:
             logger.info(f"[{transcription_id}] 📊 Generating metadata (title, summary, satisfaction, bullet_points) - ENRICHISSEMENT DE BASE...")
             metadata_start_time = time.time()
@@ -381,7 +382,7 @@ def enrich_transcription_task(self, transcription_id: str, use_distributed: bool
                 final_prompts.update(enrichment_prompts)
             
             metadata = {}
-        
+            
             # Générer le titre
             try:
                 logger.info(f"[{transcription_id}] 📊 Generating title...")
@@ -394,7 +395,7 @@ def enrich_transcription_task(self, transcription_id: str, use_distributed: bool
             except Exception as e:
                 logger.warning(f"[{transcription_id}] ⚠️ Failed to generate title: {e}", exc_info=True)
                 metadata['title'] = None
-        
+            
             # Générer le résumé
             try:
                 logger.info(f"[{transcription_id}] 📊 Generating summary...")
@@ -407,7 +408,7 @@ def enrich_transcription_task(self, transcription_id: str, use_distributed: bool
             except Exception as e:
                 logger.warning(f"[{transcription_id}] ⚠️ Failed to generate summary: {e}", exc_info=True)
                 metadata['summary'] = None
-        
+            
             # Générer le score de satisfaction
             try:
                 logger.info(f"[{transcription_id}] 📊 Generating satisfaction score...")
@@ -428,7 +429,7 @@ def enrich_transcription_task(self, transcription_id: str, use_distributed: bool
             except Exception as e:
                 logger.warning(f"[{transcription_id}] ⚠️ Failed to generate satisfaction score: {e}", exc_info=True)
                 metadata['satisfaction'] = None
-        
+            
             # Générer les bullet points
             try:
                 logger.info(f"[{transcription_id}] 📊 Generating bullet points...")
@@ -453,8 +454,6 @@ def enrich_transcription_task(self, transcription_id: str, use_distributed: bool
             metadata_time = round(time.time() - metadata_start_time, 2)
             processing_time = round(time.time() - start_time, 2)
             logger.info(f"[{transcription_id}] ✅ Metadata generation completed in {metadata_time}s")
-        else:
-            processing_time = round(time.time() - start_time, 2)
         
         # Construire l'objet enhanced_data avec les métadonnées (enrichissement de base)
         # Toujours sauvegarder, même si toutes les métadonnées sont None (pour diagnostic)
