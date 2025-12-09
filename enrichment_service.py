@@ -218,14 +218,16 @@ class EnrichmentService:
             # Générer avec le modèle
             # Utiliser les paramètres optimisés pour CPU
             # Temperature très basse pour être déterministe et éviter les hallucinations
-            max_tokens_for_text = min(self.max_tokens, max(256, len(text.split()) * 2))
+            # Limiter max_tokens à la longueur du texte original + 20% max
+            estimated_tokens = len(text.split())
+            max_tokens_for_text = min(self.max_tokens, max(50, int(estimated_tokens * 1.2)))
             response = self.model(
                 prompt,
                 max_tokens=max_tokens_for_text,
-                temperature=0.1,  # Très bas pour être déterministe (correction plutôt que création)
-                top_p=0.9,
-                top_k=40,
-                repeat_penalty=1.3,  # Forte pénalité pour éviter la répétition
+                temperature=0.05,  # Très très bas pour être déterministe (correction plutôt que création)
+                top_p=0.8,  # Plus restrictif
+                top_k=20,  # Plus restrictif
+                repeat_penalty=1.5,  # Très forte pénalité pour éviter la répétition
                 stop=stop_tokens,  # Tokens d'arrêt adaptés au modèle
                 echo=False,  # Ne pas retourner le prompt
             )
@@ -265,10 +267,12 @@ class EnrichmentService:
             
             # Si le texte généré est beaucoup plus long que l'original (hallucination),
             # ou beaucoup plus court, retourner l'original
-            if len(enriched_text) > len(text) * 3 or len(enriched_text) < len(text) * 0.3:
+            # Seuil plus strict : pas plus de 50% de différence
+            length_ratio = len(enriched_text) / len(text) if len(text) > 0 else 1.0
+            if length_ratio > 1.5 or length_ratio < 0.5:
                 logger.warning(
                     f"⚠️ Model generated suspicious output (length mismatch: "
-                    f"input={len(text)} chars, output={len(enriched_text)} chars), "
+                    f"input={len(text)} chars, output={len(enriched_text)} chars, ratio={length_ratio:.2f}), "
                     f"returning original text"
                 )
                 return text
@@ -390,14 +394,15 @@ class EnrichmentService:
             # Le modèle doit CORRIGER et AMÉLIORER, pas inventer
             base_instructions = (
                 "Tu es un assistant qui CORRIGE et AMÉLIORE des transcriptions audio en français. "
-                "Ta tâche est de :\n"
-                "1. Corriger les erreurs d'orthographe et de grammaire\n"
-                "2. Améliorer la ponctuation (points, virgules, majuscules)\n"
-                "3. Améliorer la structure (majuscules en début de phrase, paragraphes si nécessaire)\n"
-                "4. CONSERVER EXACTEMENT le sens original - ne rien ajouter, ne rien inventer\n"
-                "5. Retourner UNIQUEMENT le texte corrigé, sans explications ni commentaires, sans répéter les instructions"
+                "RÈGLES STRICTES :\n"
+                "1. Corriger UNIQUEMENT les erreurs d'orthographe et de grammaire\n"
+                "2. Améliorer UNIQUEMENT la ponctuation (points, virgules, majuscules)\n"
+                "3. Améliorer UNIQUEMENT la structure (majuscules en début de phrase)\n"
+                "4. CONSERVER EXACTEMENT le sens original - ne rien ajouter, ne rien inventer, ne rien répéter\n"
+                "5. Retourner UNIQUEMENT le texte corrigé, sans explications, sans commentaires, sans répéter les instructions, sans ajouter de contenu\n"
+                "6. La longueur du texte corrigé doit être SIMILAIRE à l'original (pas plus de 50% de différence)"
             )
-            task_instruction = "Corrige et améliore ce texte de transcription en conservant le sens original:"
+            task_instruction = "Corrige et améliore ce texte de transcription en conservant le sens original. Retourne UNIQUEMENT le texte corrigé:"
         else:
             # Pour les autres tâches (titre, résumé, etc.), utiliser le prompt spécifique
             base_instructions = "Tu es un assistant qui analyse des transcriptions audio en français."
