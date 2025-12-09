@@ -20,16 +20,18 @@ logger = logging.getLogger("vocalyx")
 class LLMModelCache:
     """Cache LRU pour les modèles LLM (Mistral, Phi-3, etc.)"""
     
-    def __init__(self, max_models: int = 2):
+    def __init__(self, max_models: int = 2, enrichment_service_class=None):
         """
         Initialise le cache de modèles LLM.
         
         Args:
             max_models: Nombre maximum de modèles à garder en cache (défaut: 2 pour économiser la RAM)
+            enrichment_service_class: Classe EnrichmentService (passée depuis worker.py pour éviter les problèmes d'import)
         """
         self.max_models = max_models
         self._cache: Dict[str, Dict] = {}
         self._lock = threading.Lock()
+        self._enrichment_service_class = enrichment_service_class
     
     def get(self, model_name: str, config) -> Optional[object]:
         """
@@ -65,8 +67,33 @@ class LLMModelCache:
             # Charger le nouveau modèle
             logger.info(f"🚀 Loading LLM model into cache: {normalized_name} (cache: {len(self._cache)}/{self.max_models})")
             try:
-                # Import dynamique pour éviter les dépendances circulaires
-                from enrichment_service import EnrichmentService
+                # Utiliser la classe passée en paramètre si disponible, sinon importer
+                if self._enrichment_service_class is not None:
+                    EnrichmentService = self._enrichment_service_class
+                else:
+                    # Import dynamique pour éviter les dépendances circulaires
+                    # Essayer plusieurs chemins d'import possibles
+                    try:
+                        from enrichment_service import EnrichmentService
+                    except ImportError:
+                        # Si l'import direct échoue, essayer avec le chemin absolu
+                        import sys
+                        from pathlib import Path
+                        # Ajouter le répertoire parent au path si nécessaire
+                        current_file = Path(__file__).resolve()
+                        parent_dir = current_file.parent.parent.parent
+                        if str(parent_dir) not in sys.path:
+                            sys.path.insert(0, str(parent_dir))
+                        try:
+                            from enrichment_service import EnrichmentService
+                        except ImportError:
+                            # Dernier recours : import depuis le répertoire de travail
+                            import os
+                            cwd = os.getcwd()
+                            if cwd not in sys.path:
+                                sys.path.insert(0, cwd)
+                            from enrichment_service import EnrichmentService
+                
                 service = EnrichmentService(config, model_name=normalized_name)
                 self._cache[normalized_name] = {
                     'service': service,

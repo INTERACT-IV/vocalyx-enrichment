@@ -21,26 +21,22 @@ from infrastructure.api.api_client import VocalyxAPIClient
 from infrastructure.redis.redis_enrichment_manager import RedisCompressionManager, RedisEnrichmentManager
 from infrastructure.models.llm_model_cache import LLMModelCache
 from application.services.chunk_splitter import ChunkSplitter
+from enrichment_service import EnrichmentService
 
 config = Config()
 
-# Configuration du logging (similaire à transcription)
-try:
-    from logging_config import setup_logging, setup_colored_logging
-    if config.log_colored:
-        logger = setup_colored_logging(
-            log_level=config.log_level,
-            log_file=config.log_file_path if config.log_file_enabled else None
-        )
-    else:
-        logger = setup_logging(
-            log_level=config.log_level,
-            log_file=config.log_file_path if config.log_file_enabled else None
-        )
-except ImportError:
-    # Fallback si logging_config n'existe pas
-    logging.basicConfig(level=getattr(logging, config.log_level))
-    logger = logging.getLogger("vocalyx")
+from logging_config import setup_logging, setup_colored_logging
+
+if config.log_colored:
+    logger = setup_colored_logging(
+        log_level=config.log_level,
+        log_file=config.log_file_path if config.log_file_enabled else None
+    )
+else:
+    logger = setup_logging(
+        log_level=config.log_level,
+        log_file=config.log_file_path if config.log_file_enabled else None
+    )
 
 # Variables globales pour les services (singletons par worker)
 _api_client = None
@@ -63,6 +59,8 @@ def on_worker_init(**kwargs):
         WORKER_PROCESS.cpu_percent(interval=None)
         logger.info(f"Worker {WORKER_PROCESS.pid} initialisé pour monitoring psutil.")
         
+        # Initialiser le cache avec la classe EnrichmentService (évite les problèmes d'import)
+        # Le cache sera initialisé dans get_llm_service si nécessaire
         # Pré-charger le modèle par défaut (warm-up)
         if config.enable_cache:
             logger.info("🔥 Warming up LLM model cache...")
@@ -132,7 +130,8 @@ def get_llm_service(model_name: str = None):
     global _model_cache
     if _model_cache is None:
         max_models = getattr(config, 'cache_max_models', 2)
-        _model_cache = LLMModelCache(max_models=max_models)
+        # Passer EnrichmentService au cache pour éviter les problèmes d'import
+        _model_cache = LLMModelCache(max_models=max_models, enrichment_service_class=EnrichmentService)
     
     if model_name is None:
         model_name = config.llm_model
@@ -754,8 +753,5 @@ if __name__ == "__main__":
         'worker',
         f'--loglevel={config.log_level.lower()}',
         f'--concurrency={config.max_workers}',
-        f'--hostname={config.instance_name}@%h',
-        '--without-gossip',
-        '--without-mingle',
-        '-Q', 'enrichment'
+        f'--hostname={config.instance_name}@%h'
     ])
