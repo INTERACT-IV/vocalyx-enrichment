@@ -308,9 +308,22 @@ def enrich_transcription_task(self, transcription_id: str, use_distributed: bool
         logger.info(f"[{transcription_id}] 🎤 Getting enrichment service with model: {llm_model} (cached)")
         enrichment_service = get_llm_service(model_name=llm_model)
         
+        # Récupérer les prompts personnalisés si fournis
+        enrichment_prompts = None
+        enrichment_prompts_str = transcription.get('enrichment_prompts')
+        if enrichment_prompts_str:
+            try:
+                if isinstance(enrichment_prompts_str, str):
+                    enrichment_prompts = json.loads(enrichment_prompts_str)
+                else:
+                    enrichment_prompts = enrichment_prompts_str
+                logger.info(f"[{transcription_id}] 📝 Using custom enrichment prompts: {list(enrichment_prompts.keys())}")
+            except Exception as e:
+                logger.warning(f"[{transcription_id}] ⚠️ Failed to parse enrichment_prompts: {e}, using default")
+        
         # Enrichir tous les segments
         logger.info(f"[{transcription_id}] 🎤 Starting enrichment with LLM...")
-        enriched_segments = enrichment_service.enrich_segments(segments)
+        enriched_segments = enrichment_service.enrich_segments(segments, custom_prompts=enrichment_prompts)
         
         processing_time = round(time.time() - start_time, 2)
         
@@ -452,12 +465,26 @@ def orchestrate_distributed_enrichment_task(self, transcription_id: str):
         
         llm_model = transcription.get('llm_model', config.llm_model)
         
+        # Récupérer les prompts personnalisés si fournis
+        enrichment_prompts = None
+        enrichment_prompts_str = transcription.get('enrichment_prompts')
+        if enrichment_prompts_str:
+            try:
+                if isinstance(enrichment_prompts_str, str):
+                    enrichment_prompts = json.loads(enrichment_prompts_str)
+                else:
+                    enrichment_prompts = enrichment_prompts_str
+                logger.info(f"[{transcription_id}] 📝 Using custom enrichment prompts in distributed mode: {list(enrichment_prompts.keys())}")
+            except Exception as e:
+                logger.warning(f"[{transcription_id}] ⚠️ Failed to parse enrichment_prompts: {e}, using default")
+        
         chunks_metadata = {
             "transcription_id": transcription_id,
             "total_chunks": num_chunks,
             "completed_chunks": 0,
             "chunks": [chunk for chunk in chunks],  # Stocker les chunks complets
             "llm_model": llm_model,
+            "enrichment_prompts": enrichment_prompts,  # Stocker les prompts personnalisés
             "orchestration_start_time": orchestration_start_time,
             "strategy": strategy
         }
@@ -561,6 +588,7 @@ def enrich_chunk_task(self, transcription_id: str, chunk_index: int, total_chunk
         
         chunk = chunks[chunk_index]
         llm_model = metadata.get('llm_model', config.llm_model)
+        enrichment_prompts = metadata.get('enrichment_prompts')  # Récupérer depuis les métadonnées
         
         logger.info(
             f"[{transcription_id}] ⚙️ DISTRIBUTED CHUNK | Worker {config.instance_name} processing | "
@@ -571,7 +599,7 @@ def enrich_chunk_task(self, transcription_id: str, chunk_index: int, total_chunk
         
         # Enrichir le chunk
         enrichment_service = get_llm_service(model_name=llm_model)
-        enriched_chunk = enrichment_service.enrich_segments(chunk)
+        enriched_chunk = enrichment_service.enrich_segments(chunk, custom_prompts=enrichment_prompts)
         
         processing_time = round(time.time() - start_time, 2)
         

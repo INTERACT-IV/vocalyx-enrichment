@@ -6,6 +6,7 @@ Production-ready pour environnement CPU-only
 
 import logging
 import os
+import re
 from pathlib import Path
 from typing import List, Dict, Optional
 
@@ -171,13 +172,14 @@ class EnrichmentService:
             logger.error(f"❌ Failed to load LLM model {self.model_name}: {e}", exc_info=True)
             raise
     
-    def enrich_text(self, text: str, context: Optional[str] = None) -> str:
+    def enrich_text(self, text: str, context: Optional[str] = None, custom_prompts: Optional[Dict] = None) -> str:
         """
         Enrichit un texte avec le modèle LLM.
         
         Args:
             text: Texte à enrichir
             context: Contexte optionnel (texte précédent)
+            custom_prompts: Prompts personnalisés depuis l'API
             
         Returns:
             Texte enrichi
@@ -189,36 +191,74 @@ class EnrichmentService:
             self._load_model()
             
             # Construire le prompt
-            prompt = self._build_prompt(text, context)
+            prompt = self._build_prompt(text, context, custom_prompts)
+            
+            # Déterminer les tokens d'arrêt selon le modèle
+            model_lower = self.model_name.lower()
+            if 'tinyllama' in model_lower or 'tiny-llama' in model_lower:
+                stop_tokens = ["</s>", "<|user|>", "<|system|>", "<|assistant|>", "\n\n\n"]
+            elif 'phi-3' in model_lower or 'phi3' in model_lower:
+                stop_tokens = ["<|end|>", "<|user|>", "<|system|>", "<|assistant|>", "\n\n\n"]
+            elif 'mistral' in model_lower:
+                stop_tokens = ["</s>", "[INST]", "[/INST]", "\n\n\n"]
+            elif 'llama-3' in model_lower or 'llama3' in model_lower:
+                stop_tokens = ["<|eot_id|>", "<|start_header_id|>", "<|end_header_id|>", "\n\n\n"]
+            else:
+                stop_tokens = ["<|im_end|>", "<|im_start|>", "</s>", "\n\n\n"]
             
             # Générer avec le modèle
             # Utiliser les paramètres optimisés pour CPU
+            # Temperature plus basse pour être plus déterministe et moins créatif
             response = self.model(
                 prompt,
-                max_tokens=self.max_tokens,
-                temperature=self.temperature,
-                top_p=self.top_p,
-                top_k=self.top_k,
+                max_tokens=min(self.max_tokens, len(text.split()) * 2),  # Limiter selon la longueur du texte
+                temperature=0.3,  # Plus bas pour être plus déterministe (correction plutôt que création)
+                top_p=0.9,
+                top_k=40,
                 repeat_penalty=1.1,  # Éviter la répétition
-                stop=["</s>", "\n\n\n"],  # Tokens d'arrêt
+                stop=stop_tokens,  # Tokens d'arrêt adaptés au modèle
                 echo=False,  # Ne pas retourner le prompt
             )
             
-            # Extraire le texte généré
+            # Extraire le texte généré (llama-cpp-python retourne un dict avec 'choices')
             if isinstance(response, dict):
                 enriched_text = response.get('choices', [{}])[0].get('text', '').strip()
+            elif hasattr(response, 'choices') and len(response.choices) > 0:
+                enriched_text = response.choices[0].text.strip()
             else:
                 # Fallback si le format est différent
                 enriched_text = str(response).strip()
             
-            # Nettoyer le texte (supprimer les tokens d'arrêt qui auraient pu passer)
-            enriched_text = enriched_text.replace('</s>', '').strip()
+            # Nettoyer le texte (supprimer tous les tokens spéciaux qui auraient pu passer)
+            tokens_to_remove = [
+                '</s>', '<|end|>', '<|user|>', '<|system|>', '<|assistant|>',
+                '<|im_start|>', '<|im_end|>', '<|eot_id|>', 
+                '<|start_header_id|>', '<|end_header_id|>',
+                '[INST]', '[/INST]', '<s>', '</s>'
+            ]
+            for token in tokens_to_remove:
+                enriched_text = enriched_text.replace(token, '')
+            
+            # Nettoyer les espaces multiples et sauts de ligne excessifs
+            import re
+            enriched_text = re.sub(r'\n{3,}', '\n\n', enriched_text)  # Max 2 sauts de ligne
+            enriched_text = re.sub(r' {2,}', ' ', enriched_text)  # Max 1 espace
+            enriched_text = enriched_text.strip()
             
             # Si le modèle n'a rien généré ou a généré quelque chose de suspect,
             # retourner le texte original
-            if not enriched_text or len(enriched_text) < len(text) * 0.5:
+            if not enriched_text:
                 logger.warning(
-                    f"⚠️ Model generated suspicious output (too short or empty), "
+                    f"⚠️ Model generated empty output, returning original text"
+                )
+                return text
+            
+            # Si le texte généré est beaucoup plus long que l'original (hallucination),
+            # ou beaucoup plus court, retourner l'original
+            if len(enriched_text) > len(text) * 3 or len(enriched_text) < len(text) * 0.3:
+                logger.warning(
+                    f"⚠️ Model generated suspicious output (length mismatch: "
+                    f"input={len(text)} chars, output={len(enriched_text)} chars), "
                     f"returning original text"
                 )
                 return text
@@ -235,13 +275,14 @@ class EnrichmentService:
             # En cas d'erreur, retourner le texte original
             return text
     
-    def enrich_segments(self, segments: List[Dict], context: Optional[List[Dict]] = None) -> List[Dict]:
+    def enrich_segments(self, segments: List[Dict], context: Optional[List[Dict]] = None, custom_prompts: Optional[Dict] = None) -> List[Dict]:
         """
         Enrichit une liste de segments de transcription.
         
         Args:
             segments: Liste de segments à enrichir
             context: Segments précédents pour le contexte
+            custom_prompts: Prompts personnalisés depuis l'API
             
         Returns:
             Liste de segments enrichis
@@ -258,19 +299,27 @@ class EnrichmentService:
             for i, segment in enumerate(segments):
                 text = segment.get('text', '').strip()
                 if not text:
+                    # Segment vide, le garder tel quel
                     enriched_segments.append(segment)
                     continue
                 
-                # Utiliser le texte précédent comme contexte
-                context_text = previous_text if context is None else None
+                # Utiliser le texte précédent comme contexte (limité à 200 caractères pour éviter les prompts trop longs)
+                context_text = None
+                if context is None and previous_text:
+                    context_text = previous_text[-200:] if len(previous_text) > 200 else previous_text
+                elif context:
+                    # Construire le contexte depuis les segments précédents
+                    context_segments = context[:i] if i < len(context) else context
+                    context_text = " ".join(seg.get('text', '') for seg in context_segments[-3:])  # Derniers 3 segments
+                    context_text = context_text[-200:] if len(context_text) > 200 else context_text
                 
                 # Enrichir le segment
-                enriched_text = self.enrich_text(text, context_text)
+                enriched_text = self.enrich_text(text, context_text, custom_prompts)
                 
                 # Créer le segment enrichi
                 enriched_segment = segment.copy()
                 enriched_segment['enriched_text'] = enriched_text
-                enriched_segment['original_text'] = text
+                enriched_segment['original_text'] = text  # Garder l'original pour comparaison
                 
                 enriched_segments.append(enriched_segment)
                 previous_text = text
@@ -283,14 +332,15 @@ class EnrichmentService:
             # En cas d'erreur, retourner les segments originaux
             return segments
     
-    def _build_prompt(self, text: str, context: Optional[str] = None) -> str:
+    def _build_prompt(self, text: str, context: Optional[str] = None, custom_prompts: Optional[Dict] = None) -> str:
         """
         Construit le prompt pour le modèle LLM.
-        Adapté pour les modèles instruct (Phi-3, Mistral, Llama, etc.)
+        Adapté pour les modèles instruct (TinyLlama, Phi-3, Mistral, Llama, etc.)
         
         Args:
             text: Texte à enrichir
             context: Contexte optionnel
+            custom_prompts: Prompts personnalisés depuis l'API (dict avec title, summary, etc.)
             
         Returns:
             Prompt formaté selon le format du modèle
@@ -298,45 +348,52 @@ class EnrichmentService:
         # Détecter le type de modèle depuis le nom
         model_lower = self.model_name.lower()
         
+        # Instructions précises pour l'enrichissement
+        # Le modèle doit CORRIGER et AMÉLIORER, pas inventer
+        base_instructions = (
+            "Tu es un assistant qui CORRIGE et AMÉLIORE des transcriptions audio en français. "
+            "Ta tâche est de :\n"
+            "1. Corriger les erreurs d'orthographe et de grammaire\n"
+            "2. Améliorer la ponctuation (points, virgules, majuscules)\n"
+            "3. Améliorer la structure (majuscules en début de phrase, paragraphes si nécessaire)\n"
+            "4. CONSERVER EXACTEMENT le sens original - ne rien ajouter, ne rien inventer\n"
+            "5. Retourner UNIQUEMENT le texte corrigé, sans explications ni commentaires"
+        )
+        
+        # Si des prompts personnalisés sont fournis, les utiliser
+        if custom_prompts:
+            # Pour l'instant, on utilise le prompt de base mais on pourrait adapter selon le type
+            # (title, summary, satisfaction, bullet_points)
+            task_instruction = custom_prompts.get('summary', 
+                "Corrige et améliore ce texte de transcription en conservant le sens original:")
+        else:
+            task_instruction = "Corrige et améliore ce texte de transcription en conservant le sens original:"
+        
+        # Construire le prompt utilisateur
+        if context:
+            user_prompt = f"{task_instruction}\n\nContexte précédent: {context}\n\nTexte à corriger:\n{text}"
+        else:
+            user_prompt = f"{task_instruction}\n\n{text}"
+        
+        # Format pour TinyLlama (utilise <|system|>, </s>, <|user|>, <|assistant|>)
+        if 'tinyllama' in model_lower or 'tiny-llama' in model_lower:
+            prompt = f"<|system|>\n{base_instructions}</s>\n<|user|>\n{user_prompt}</s>\n<|assistant|>\n"
+        
         # Format pour Phi-3
-        if 'phi-3' in model_lower or 'phi3' in model_lower:
-            system_prompt = "Tu es un assistant qui améliore et enrichit des transcriptions audio en français. Tu corriges les erreurs, améliores la ponctuation et la structure, tout en conservant le sens original."
-            if context:
-                user_prompt = f"Contexte précédent: {context}\n\nTexte à enrichir: {text}\n\nEnrichis ce texte:"
-            else:
-                user_prompt = f"Enrichis et améliore ce texte de transcription: {text}"
-            
-            prompt = f"<|system|>\n{system_prompt}<|end|>\n<|user|>\n{user_prompt}<|end|>\n<|assistant|>\n"
+        elif 'phi-3' in model_lower or 'phi3' in model_lower:
+            prompt = f"<|system|>\n{base_instructions}<|end|>\n<|user|>\n{user_prompt}<|end|>\n<|assistant|>\n"
         
         # Format pour Mistral
         elif 'mistral' in model_lower:
-            system_prompt = "Tu es un assistant qui améliore et enrichit des transcriptions audio en français."
-            if context:
-                user_prompt = f"Contexte: {context}\n\nTexte: {text}\n\nEnrichis ce texte:"
-            else:
-                user_prompt = f"Enrichis et améliore ce texte de transcription: {text}"
-            
-            prompt = f"<s>[INST] {system_prompt}\n\n{user_prompt} [/INST]"
+            prompt = f"<s>[INST] {base_instructions}\n\n{user_prompt} [/INST]"
         
         # Format pour Llama 3
         elif 'llama-3' in model_lower or 'llama3' in model_lower:
-            system_prompt = "Tu es un assistant qui améliore et enrichit des transcriptions audio en français."
-            if context:
-                user_prompt = f"Contexte: {context}\n\nTexte: {text}\n\nEnrichis ce texte:"
-            else:
-                user_prompt = f"Enrichis et améliore ce texte de transcription: {text}"
-            
-            prompt = f"<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\n{system_prompt}<|eot_id|><|start_header_id|>user<|end_header_id|>\n\n{user_prompt}<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n"
+            prompt = f"<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\n{base_instructions}<|eot_id|><|start_header_id|>user<|end_header_id|>\n\n{user_prompt}<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n"
         
-        # Format générique (ChatML)
+        # Format générique (ChatML) - pour Gemma et autres
         else:
-            system_prompt = "Tu es un assistant qui améliore et enrichit des transcriptions audio en français. Tu corriges les erreurs, améliores la ponctuation et la structure, tout en conservant le sens original."
-            if context:
-                user_prompt = f"Contexte précédent: {context}\n\nTexte à enrichir: {text}\n\nEnrichis ce texte:"
-            else:
-                user_prompt = f"Enrichis et améliore ce texte de transcription: {text}"
-            
-            prompt = f"<|im_start|>system\n{system_prompt}<|im_end|>\n<|im_start|>user\n{user_prompt}<|im_end|>\n<|im_start|>assistant\n"
+            prompt = f"<|im_start|>system\n{base_instructions}<|im_end|>\n<|im_start|>user\n{user_prompt}<|im_end|>\n<|im_start|>assistant\n"
         
         return prompt
     
