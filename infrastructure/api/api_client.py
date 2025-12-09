@@ -1,67 +1,108 @@
 """
-Client API pour communiquer avec vocalyx-api
+VocalyxAPIClient - Client HTTP refactorisé pour communiquer avec vocalyx-api
 """
 
 import logging
-import requests
-from typing import Optional, Dict, Any
+from typing import Dict, Optional
+import httpx
 
-logger = logging.getLogger("vocalyx")
+logger = logging.getLogger("vocalyx.enrichment")
 
 
 class VocalyxAPIClient:
-    """Client pour communiquer avec l'API Vocalyx"""
+    """
+    Client HTTP pour communiquer avec vocalyx-api.
+    Le worker utilise ce client pour récupérer et mettre à jour les transcriptions.
+    """
     
     def __init__(self, config):
-        """
-        Initialise le client API.
+        self.base_url = config.api_url.rstrip('/')
+        self.internal_key = config.internal_api_key
+        self.timeout = httpx.Timeout(60.0, connect=5.0)
         
-        Args:
-            config: Configuration du worker
-        """
-        self.api_url = config.vocalyx_api_url
-        self.api_key = config.internal_api_key
-        self.timeout = getattr(config, 'api_timeout', 60)
-        self.headers = {
-            'Content-Type': 'application/json',
-            'X-Internal-API-Key': self.api_key
+        # Client synchrone (suffisant pour le worker)
+        self.client = httpx.Client(timeout=self.timeout)
+        
+        logger.info(f"API Client initialized: {self.base_url}")
+        
+        # Vérifier la connexion à l'API au démarrage
+        self._verify_connection()
+    
+    def _verify_connection(self):
+        """Vérifie la connexion à l'API au démarrage"""
+        try:
+            response = self.client.get(
+                f"{self.base_url}/health",
+                timeout=httpx.Timeout(5.0)
+            )
+            response.raise_for_status()
+            health = response.json()
+            
+            if health.get("status") == "healthy":
+                logger.info("✅ API connection verified")
+            else:
+                logger.warning(f"⚠️ API health check returned: {health}")
+        except Exception as e:
+            logger.error(f"❌ API connection failed: {e}")
+            logger.error("⚠️ Worker will start but may fail to process tasks")
+    
+    def _get_headers(self) -> Dict[str, str]:
+        """Génère les headers d'authentification interne"""
+        return {
+            "X-Internal-Key": self.internal_key
         }
     
     def get_transcription(self, transcription_id: str) -> Optional[Dict]:
         """
-        Récupère une transcription depuis l'API.
+        Récupère une transcription par son ID.
         
         Args:
             transcription_id: ID de la transcription
             
         Returns:
-            Dictionnaire avec les données de transcription ou None
+            dict: Données de la transcription ou None si non trouvée
         """
         try:
-            url = f"{self.api_url}/api/transcriptions/{transcription_id}"
-            response = requests.get(url, headers=self.headers, timeout=self.timeout)
+            response = self.client.get(
+                f"{self.base_url}/api/transcriptions/{transcription_id}",
+                headers=self._get_headers()
+            )
             response.raise_for_status()
             return response.json()
-        except Exception as e:
-            logger.error(f"❌ Error getting transcription {transcription_id}: {e}")
-            return None
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 404:
+                logger.error(f"Transcription {transcription_id} not found")
+                return None
+            logger.error(f"HTTP error getting transcription: {e}")
+            raise
+        except httpx.HTTPError as e:
+            logger.error(f"Error getting transcription: {e}")
+            raise
     
-    def update_transcription(self, transcription_id: str, data: Dict[str, Any]) -> bool:
+    def update_transcription(self, transcription_id: str, data: Dict) -> Dict:
         """
-        Met à jour une transcription dans l'API.
+        Met à jour une transcription.
         
         Args:
             transcription_id: ID de la transcription
             data: Données à mettre à jour
             
         Returns:
-            True si succès, False sinon
+            dict: Transcription mise à jour
         """
         try:
-            url = f"{self.api_url}/api/transcriptions/{transcription_id}"
-            response = requests.patch(url, json=data, headers=self.headers, timeout=self.timeout)
+            response = self.client.patch(
+                f"{self.base_url}/api/transcriptions/{transcription_id}",
+                json=data,
+                headers=self._get_headers()
+            )
             response.raise_for_status()
-            return True
-        except Exception as e:
-            logger.error(f"❌ Error updating transcription {transcription_id}: {e}")
-            return False
+            return response.json()
+        except httpx.HTTPError as e:
+            logger.error(f"Error updating transcription: {e}")
+            raise
+    
+    def close(self):
+        """Ferme le client HTTP"""
+        self.client.close()
+
