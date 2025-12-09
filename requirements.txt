@@ -1,19 +1,28 @@
-# vocalyx-enrichment/requirements.txt
-# Worker Celery pour l'enrichissement des transcriptions avec LLM
+# Vocalyx Enrichment Worker - Dependencies
 
-# Celery & Redis
-celery==5.5.3
-redis==7.0.1
+# Celery
+celery>=5.3.0
+redis>=5.0.0
 
-# Client HTTP (pour communiquer avec l'API)
-httpx==0.28.1
-requests>=2.32.5
+# API Client
+requests>=2.31.0
 
-# LLM - CPU Only
-# Utilisation de llama-cpp-python pour LLM local GGUF (CPU)
-llama-cpp-python==0.2.70
+# System monitoring
+psutil>=5.9.0
 
-# Utilitaires
-python-dotenv==1.2.1
-psutil==5.9.8
+# Optional: Colored logging
+colorama>=0.4.6
 
+# LLM Libraries - CPU-optimized
+# llama-cpp-python: Backend principal pour modèles GGUF quantisés (CPU-only)
+# Installation recommandée avec optimisations CPU:
+#   CMAKE_ARGS="-DLLAMA_BLAS=ON -DLLAMA_BLAS_VENDOR=OpenBLAS" pip install llama-cpp-python
+#   ou pour Mac M1/M2:
+#   CMAKE_ARGS="-DLLAMA_METAL=ON" pip install llama-cpp-python
+llama-cpp-python>=0.2.0
+
+# Hugging Face Hub: Pour télécharger les modèles GGUF
+huggingface-hub>=0.19.0
+
+# Optional: Pour meilleures performances CPU (OpenBLAS)
+# numpy>=1.24.0  # Dépendance de llama-cpp-python

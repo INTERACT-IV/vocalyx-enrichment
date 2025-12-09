@@ -1,59 +1,113 @@
 """
 vocalyx-enrichment/worker.py
-Worker Celery pour l'enrichissement des transcriptions avec LLM
+Worker Celery pour l'enrichissement de transcriptions avec LLM
+Architecture distribuée avec workers partagés et agrégation
 """
 
 import logging
 import time
 import os
-import json
 import psutil
-import threading
+import json
+import redis
+from pathlib import Path
 from datetime import datetime
 from celery.signals import worker_init
 from celery.worker.control import Panel
-
 from celery import Celery
+
 from config import Config
 from infrastructure.api.api_client import VocalyxAPIClient
-from application.services.enrichment_worker_service import EnrichmentWorkerService
-from enrichment_service import EnrichmentService
+from infrastructure.redis.redis_enrichment_manager import RedisCompressionManager, RedisEnrichmentManager
+from infrastructure.models.llm_model_cache import LLMModelCache
+from application.services.chunk_splitter import ChunkSplitter
 
 config = Config()
 
-from logging_config import setup_logging, setup_colored_logging
+# Configuration du logging (similaire à transcription)
+try:
+    from logging_config import setup_logging, setup_colored_logging
+    if config.log_colored:
+        logger = setup_colored_logging(
+            log_level=config.log_level,
+            log_file=config.log_file_path if config.log_file_enabled else None
+        )
+    else:
+        logger = setup_logging(
+            log_level=config.log_level,
+            log_file=config.log_file_path if config.log_file_enabled else None
+        )
+except ImportError:
+    # Fallback si logging_config n'existe pas
+    logging.basicConfig(level=getattr(logging, config.log_level))
+    logger = logging.getLogger("vocalyx")
 
-if config.log_colored:
-    logger = setup_colored_logging(
-        log_level=config.log_level,
-        log_file=config.log_file_path if config.log_file_enabled else None
-    )
-else:
-    logger = setup_logging(
-        log_level=config.log_level,
-        log_file=config.log_file_path if config.log_file_enabled else None
-    )
-
-# Variables globales pour les services
+# Variables globales pour les services (singletons par worker)
 _api_client = None
-_enrichment_service = None
-_enrichment_service_lock = threading.Lock()
+_redis_client = None
+_redis_manager = None
+_model_cache = None
 
 # Variables globales pour psutil
 WORKER_PROCESS = None
 WORKER_START_TIME = None
 
+
 @worker_init.connect
 def on_worker_init(**kwargs):
-    """Initialise psutil quand le worker démarre."""
-    global WORKER_PROCESS, WORKER_START_TIME
+    """Initialise psutil et pré-charge le modèle au démarrage"""
+    global WORKER_PROCESS, WORKER_START_TIME, _model_cache
     try:
         WORKER_PROCESS = psutil.Process(os.getpid())
         WORKER_START_TIME = datetime.now()
-        WORKER_PROCESS.cpu_percent(interval=None)  # Initialiser la mesure
+        WORKER_PROCESS.cpu_percent(interval=None)
         logger.info(f"Worker {WORKER_PROCESS.pid} initialisé pour monitoring psutil.")
+        
+        # Pré-charger le modèle par défaut (warm-up)
+        if config.enable_cache:
+            logger.info("🔥 Warming up LLM model cache...")
+            try:
+                get_llm_service(config.llm_model)
+                logger.info("✅ LLM model cache warmed up")
+            except Exception as e:
+                logger.warning(f"⚠️ Failed to warm up model cache: {e}")
     except Exception as e:
-        logger.error(f"Erreur lors de l'initialisation de psutil: {e}")
+        logger.error(f"Erreur lors de l'initialisation du worker: {e}")
+
+
+def get_redis_client():
+    """Obtient un client Redis pour stocker les résultats des chunks"""
+    global _redis_client
+    if _redis_client is None:
+        redis_url = getattr(config, 'redis_enrichment_url', None)
+        if not redis_url:
+            # Par défaut, utiliser DB 3 pour l'enrichissement
+            base_url = config.celery_broker_url.rsplit('/', 1)[0]
+            redis_url = f"{base_url}/3"
+        
+        logger.info(f"🔌 Initializing Redis enrichment client: {redis_url}")
+        _redis_client = redis.from_url(redis_url, decode_responses=True)
+        
+        try:
+            _redis_client.ping()
+            logger.info(f"✅ Redis enrichment client connected successfully: {redis_url}")
+        except Exception as e:
+            logger.error(f"❌ Failed to connect to Redis enrichment: {redis_url} - {e}")
+            raise
+    
+    return _redis_client
+
+
+def get_redis_manager() -> RedisEnrichmentManager:
+    """Obtient le gestionnaire Redis pour les opérations d'enrichissement"""
+    global _redis_manager
+    if _redis_manager is None:
+        redis_client = get_redis_client()
+        compression = RedisCompressionManager(
+            enabled=getattr(config, 'redis_enrichment_compress', True)
+        )
+        _redis_manager = RedisEnrichmentManager(redis_client, compression)
+    return _redis_manager
 
 
 def get_api_client():
@@ -65,68 +119,28 @@ def get_api_client():
     return _api_client
 
 
-def get_worker_service():
-    """Charge le service worker (une fois par worker)"""
-    api_client = get_api_client()
-    return EnrichmentWorkerService(api_client)
-
-
-def get_enrichment_service(model_name: str = "Phi-3-mini-4k-instruct-q4.gguf"):
+def get_llm_service(model_name: str = None):
     """
-    Charge le service d'enrichissement avec cache du modèle.
+    Charge le service LLM avec cache par modèle.
     
     Args:
-        model_name: Nom du fichier modèle GGUF à utiliser (ex: "Phi-3-mini-4k-instruct-q4.gguf")
+        model_name: Nom du modèle LLM ou chemin (défaut: config.llm_model)
         
     Returns:
         EnrichmentService: Service d'enrichissement avec le modèle demandé
     """
-    global _enrichment_service, _enrichment_service_lock
-    from pathlib import Path
+    global _model_cache
+    if _model_cache is None:
+        max_models = getattr(config, 'cache_max_models', 2)
+        _model_cache = LLMModelCache(max_models=max_models)
     
-    # Si c'est un ancien modèle DialoGPT, le remplacer par un modèle GGUF local
-    if model_name and ("DialoGPT" in model_name or "microsoft/" in model_name):
-        logger.warning(f"⚠️ Ancien modèle DialoGPT détecté ({model_name}), remplacement par Phi-3-mini-4k-instruct-q4.gguf")
-        model_name = "Phi-3-mini-4k-instruct-q4.gguf"
+    if model_name is None:
+        model_name = config.llm_model
     
-    # Si le modèle n'est pas spécifié, utiliser le défaut
-    if not model_name:
-        model_name = "Phi-3-mini-4k-instruct-q4.gguf"
-    
-    with _enrichment_service_lock:
-        if _enrichment_service is None or _enrichment_service.model_name != model_name:
-            logger.info(f"🚀 Loading LLM model: {model_name}")
-            try:
-                # Les modèles sont dans /app/models/enrichment (monté depuis ./shared/models/enrichment)
-                models_dir = Path("/app/models/enrichment")
-                
-                # Vérifier que le fichier existe
-                model_path = models_dir / model_name
-                if not model_path.exists():
-                    # Essayer de lister les fichiers disponibles
-                    available_models = list(models_dir.glob("*.gguf")) if models_dir.exists() else []
-                    if available_models:
-                        logger.warning(f"⚠️ Modèle {model_name} non trouvé, utilisation du premier modèle disponible: {available_models[0].name}")
-                        model_name = available_models[0].name
-                    else:
-                        raise FileNotFoundError(
-                            f"Modèle {model_name} non trouvé dans {models_dir}. "
-                            f"Aucun modèle GGUF disponible. Vérifiez que les modèles sont dans ./shared/models/enrichment/"
-                        )
-                
-                _enrichment_service = EnrichmentService(
-                    model_name=model_name, 
-                    models_dir=models_dir,
-                    device=config.device
-                )
-                logger.info(f"✅ Model {model_name} loaded successfully")
-            except Exception as e:
-                logger.error(f"❌ Failed to load model {model_name}: {e}", exc_info=True)
-                raise
-        return _enrichment_service
+    return _model_cache.get(model_name, config)
 
 
-# Créer l'application Celery (connexion au même broker que vocalyx-api)
+# Créer l'application Celery
 celery_app = Celery(
     'vocalyx-enrichment',
     broker=config.celery_broker_url,
@@ -154,12 +168,9 @@ celery_app.conf.update(
 )
 
 
-@Panel.register(
-    name='get_worker_health',
-    alias='health'
-)
+@Panel.register(name='get_worker_health', alias='health')
 def get_worker_health_handler(state, **kwargs):
-    """Handler pour la commande de contrôle 'get_worker_health'."""
+    """Handler pour la commande de contrôle 'get_worker_health'"""
     if WORKER_PROCESS is None:
         logger.warning("get_worker_health_handler appelé avant initialisation de psutil.")
         return {'error': 'Worker not initialized'}
@@ -177,6 +188,7 @@ def get_worker_health_handler(state, **kwargs):
         }
         
         return health_data
+        
     except Exception as e:
         logger.error(f"Erreur dans get_worker_health_handler: {e}", exc_info=True)
         return {'error': str(e)}
@@ -190,112 +202,154 @@ def get_worker_health_handler(state, **kwargs):
     soft_time_limit=1800,
     time_limit=2100,
     acks_late=True,
-    reject_on_worker_lost=True,
-    queue='enrichment'  # Queue spécifique pour l'enrichissement
+    reject_on_worker_lost=True
 )
-def enrich_transcription_task(self, transcription_id: str):
+def enrich_transcription_task(self, transcription_id: str, use_distributed: bool = None):
     """
     Tâche d'enrichissement exécutée par le worker.
-    """
     
-    logger.info(f"[{transcription_id}] 🎯 Enrichment task started by worker {config.instance_name}")
+    Si use_distributed=True ou si la transcription est longue, cette tâche va
+    déléguer à orchestrate_distributed_enrichment au lieu de traiter directement.
+    """
+    api_client = get_api_client()
+    
+    # 1. Récupérer les informations de la transcription depuis l'API
+    logger.info(f"[{transcription_id}] 📡 Fetching transcription data from API...")
+    transcription = api_client.get_transcription(transcription_id)
+    
+    if not transcription:
+        raise ValueError(f"Transcription {transcription_id} not found")
+    
+    # Récupérer les segments
+    segments_json = transcription.get('segments')
+    if not segments_json:
+        logger.warning(f"[{transcription_id}] ⚠️ No segments found, skipping enrichment")
+        return {
+            "status": "skipped",
+            "transcription_id": transcription_id,
+            "reason": "no_segments"
+        }
+    
+    # Parser les segments
+    if isinstance(segments_json, str):
+        segments = json.loads(segments_json)
+    else:
+        segments = segments_json
+    
+    if not segments:
+        logger.warning(f"[{transcription_id}] ⚠️ Empty segments, skipping enrichment")
+        return {
+            "status": "skipped",
+            "transcription_id": transcription_id,
+            "reason": "empty_segments"
+        }
+    
+    # Vérifier si on doit utiliser le mode distribué
+    if use_distributed is None:
+        # Décider automatiquement : distribué si plus de 20 segments
+        use_distributed = len(segments) > 20
+        logger.info(
+            f"[{transcription_id}] 📊 DISTRIBUTION DECISION (worker) | "
+            f"Segments: {len(segments)} | "
+            f"Threshold: 20 | "
+            f"Mode: {'DISTRIBUTED' if use_distributed else 'CLASSIC'}"
+        )
+    
+    # Si mode distribué, déléguer à orchestrate_distributed_enrichment
+    if use_distributed:
+        logger.info(
+            f"[{transcription_id}] 🚀 DISTRIBUTED MODE | "
+            f"Delegating to orchestrate_distributed_enrichment | "
+            f"Worker: {config.instance_name}"
+        )
+        
+        from celery import current_app as celery_current_app
+        orchestrate_task = celery_current_app.send_task(
+            'orchestrate_distributed_enrichment',
+            args=[transcription_id],
+            queue='enrichment',
+            countdown=1
+        )
+        
+        logger.info(
+            f"[{transcription_id}] ✅ DISTRIBUTED MODE | "
+            f"Orchestration task enqueued: {orchestrate_task.id}"
+        )
+        
+        return {
+            "transcription_id": transcription_id,
+            "task_id": self.request.id,
+            "orchestration_task_id": orchestrate_task.id,
+            "status": "queued_distributed",
+            "mode": "distributed"
+        }
+    
+    # MODE CLASSIQUE : Traitement direct
+    logger.info(
+        f"[{transcription_id}] 🎯 CLASSIC MODE STARTED | "
+        f"Worker: {config.instance_name} | "
+        f"Task ID: {self.request.id} | "
+        f"Segments: {len(segments)}"
+    )
     start_time = time.time()
     
     try:
-        # 1. Récupérer les informations de la transcription depuis l'API
-        logger.info(f"[{transcription_id}] 📡 Fetching transcription data from API...")
-        worker_service = get_worker_service()
-        transcription = worker_service.get_transcription(transcription_id)
+        # Mettre à jour le statut
+        api_client.update_transcription(transcription_id, {
+            "enrichment_status": "processing",
+            "enrichment_worker_id": config.instance_name
+        })
+        logger.info(f"[{transcription_id}] ⚙️ Status updated to 'processing'")
         
-        if not transcription:
-            raise ValueError(f"Transcription {transcription_id} not found")
+        # Obtenir le service d'enrichissement avec cache
+        llm_model = transcription.get('llm_model', config.llm_model)
+        logger.info(f"[{transcription_id}] 🎤 Getting enrichment service with model: {llm_model} (cached)")
+        enrichment_service = get_llm_service(model_name=llm_model)
         
-        text = transcription.get('text')
-        if not text:
-            raise ValueError(f"Transcription {transcription_id} has no text (transcription not completed)")
+        # Enrichir tous les segments
+        logger.info(f"[{transcription_id}] 🎤 Starting enrichment with LLM...")
+        enriched_segments = enrichment_service.enrich_segments(segments)
         
-        # Vérifier si l'enrichissement est demandé
-        enrichment_requested = transcription.get('enrichment_requested', False)
-        if not enrichment_requested:
-            logger.info(f"[{transcription_id}] Enrichment not requested, skipping...")
-            return {
-                "status": "skipped",
-                "transcription_id": transcription_id,
-                "reason": "enrichment not requested"
-            }
-        
-        # Récupérer le modèle LLM à utiliser (depuis la DB ou config par défaut)
-        llm_model = transcription.get('llm_model') or "Phi-3-mini-4k-instruct-q4.gguf"
-        
-        # Si c'est un ancien modèle DialoGPT, le remplacer par un modèle GGUF local
-        if llm_model and ("DialoGPT" in llm_model or "microsoft/" in llm_model):
-            logger.warning(f"[{transcription_id}] ⚠️ Ancien modèle DialoGPT détecté ({llm_model}), remplacement par Phi-3-mini-4k-instruct-q4.gguf")
-            llm_model = "Phi-3-mini-4k-instruct-q4.gguf"
-        
-        # Récupérer les prompts personnalisés (s'il y en a)
-        enrichment_prompts_str = transcription.get('enrichment_prompts')
-        enrichment_prompts = None
-        if enrichment_prompts_str:
-            try:
-                if isinstance(enrichment_prompts_str, str):
-                    enrichment_prompts = json.loads(enrichment_prompts_str)
-                elif isinstance(enrichment_prompts_str, dict):
-                    enrichment_prompts = enrichment_prompts_str
-            except json.JSONDecodeError as e:
-                logger.warning(f"[{transcription_id}] Invalid JSON for enrichment_prompts: {e}")
-                enrichment_prompts = None
-        
-        logger.info(f"[{transcription_id}] 📝 Text length: {len(text)} chars | LLM Model: {llm_model}")
-        
-        # 2. Mettre à jour le statut d'enrichissement à "processing"
-        worker_service.mark_enrichment_processing(transcription_id, config.instance_name)
-        logger.info(f"[{transcription_id}] ⚙️ Enrichment status updated to 'processing'")
-        
-        # 3. Obtenir le service d'enrichissement
-        logger.info(f"[{transcription_id}] 🤖 Getting enrichment service with model: {llm_model}")
-        enrichment_service = get_enrichment_service(model_name=llm_model)
-        
-        # 4. Exécuter l'enrichissement
-        logger.info(f"[{transcription_id}] 🤖 Starting enrichment with LLM...")
-        
-        enrichment_data = enrichment_service.enrich_transcription(
-            transcription_text=text,
-            prompts=enrichment_prompts
-        )
-        
-        logger.info(f"[{transcription_id}] ✅ Enrichment service completed")
-        
-        # Utiliser le temps total du timing si disponible (plus précis), sinon calculer le temps total
-        if enrichment_data.get('timing') and enrichment_data['timing'].get('total_time'):
-            processing_time = enrichment_data['timing']['total_time']
-        else:
-            processing_time = round(time.time() - start_time, 2)
+        processing_time = round(time.time() - start_time, 2)
         
         logger.info(
             f"[{transcription_id}] ✅ Enrichment completed | "
-            f"Processing: {processing_time}s"
+            f"Processing: {processing_time}s | "
+            f"Segments: {len(enriched_segments)}"
         )
         
-        # 5. Mettre à jour avec les résultats
-        logger.info(f"[{transcription_id}] 💾 Saving enrichment results to API...")
-        worker_service.mark_enrichment_done(transcription_id, enrichment_data, processing_time)
+        # Construire le texte enrichi complet
+        enriched_text = " ".join(seg.get('enriched_text', seg.get('text', '')) for seg in enriched_segments)
         
-        logger.info(f"[{transcription_id}] 💾 Enrichment results saved to API")
+        # Mettre à jour avec les résultats
+        logger.info(f"[{transcription_id}] 💾 Saving results to API...")
+        api_client.update_transcription(transcription_id, {
+            "enrichment_status": "done",
+            "enriched_text": enriched_text,
+            "enriched_segments": json.dumps(enriched_segments),
+            "enrichment_processing_time": processing_time
+        })
+        
+        logger.info(f"[{transcription_id}] 💾 Results saved to API")
         
         return {
             "status": "success",
             "transcription_id": transcription_id,
             "processing_time": processing_time,
-            "enrichment_data": enrichment_data
+            "segments_count": len(enriched_segments),
+            "mode": "classic"
         }
         
     except Exception as e:
         logger.error(f"[{transcription_id}] ❌ Error: {e}", exc_info=True)
         
-        # Mettre à jour le statut d'enrichissement à "error"
+        # Mettre à jour le statut à "error"
         try:
-            worker_service_on_error = get_worker_service()
-            worker_service_on_error.mark_enrichment_error(transcription_id, str(e))
+            api_client_on_error = get_api_client()
+            api_client_on_error.update_transcription(transcription_id, {
+                "enrichment_status": "error",
+                "enrichment_error_message": str(e)
+            })
         except Exception as update_error:
             logger.error(f"[{transcription_id}] Failed to update error status: {update_error}")
         
@@ -313,12 +367,395 @@ def enrich_transcription_task(self, transcription_id: str):
         }
 
 
+@celery_app.task(
+    bind=True,
+    name='orchestrate_distributed_enrichment',
+    max_retries=2,
+    default_retry_delay=30,
+    acks_late=True
+)
+def orchestrate_distributed_enrichment_task(self, transcription_id: str):
+    """
+    Orchestre l'enrichissement distribué : découpe les segments en chunks et crée les tâches.
+    
+    Args:
+        transcription_id: ID de la transcription
+    """
+    logger.info(
+        f"[{transcription_id}] 🎼 DISTRIBUTED ORCHESTRATION STARTED | "
+        f"Worker: {config.instance_name} | "
+        f"Task ID: {self.request.id}"
+    )
+    
+    try:
+        api_client = get_api_client()
+        transcription = api_client.get_transcription(transcription_id)
+        
+        if not transcription:
+            raise ValueError(f"Transcription {transcription_id} not found")
+        
+        # Récupérer les segments
+        segments_json = transcription.get('segments')
+        if not segments_json:
+            raise ValueError(f"No segments found for transcription {transcription_id}")
+        
+        if isinstance(segments_json, str):
+            segments = json.loads(segments_json)
+        else:
+            segments = segments_json
+        
+        if not segments:
+            raise ValueError(f"Empty segments for transcription {transcription_id}")
+        
+        # Mettre à jour le statut
+        api_client.update_transcription(transcription_id, {
+            "enrichment_status": "processing",
+            "enrichment_worker_id": f"{config.instance_name}-orchestrator"
+        })
+        
+        # 1. Découper en chunks intelligents
+        logger.info(
+            f"[{transcription_id}] ✂️ DISTRIBUTED ORCHESTRATION | Step 1/3: Splitting segments into chunks | "
+            f"Total segments: {len(segments)}"
+        )
+        
+        splitter = ChunkSplitter(
+            max_chunk_size=getattr(config, 'max_chunk_size', 500),
+            max_duration=60.0
+        )
+        
+        # Détecter si la diarisation est disponible
+        use_diarization = any(seg.get('speaker') for seg in segments)
+        strategy = 'speaker' if use_diarization else 'size'
+        
+        chunks = splitter.split(segments, strategy=strategy, use_diarization=use_diarization)
+        num_chunks = len(chunks)
+        
+        logger.info(
+            f"[{transcription_id}] ✅ DISTRIBUTED ORCHESTRATION | Step 1/3: Chunking complete | "
+            f"Chunks created: {num_chunks} | "
+            f"Will be distributed across available workers"
+        )
+        
+        if num_chunks == 0:
+            raise ValueError("No chunks created")
+        
+        # 2. Stocker les métadonnées dans Redis
+        redis_manager = get_redis_manager()
+        orchestration_start_time = time.time()
+        
+        llm_model = transcription.get('llm_model', config.llm_model)
+        
+        chunks_metadata = {
+            "transcription_id": transcription_id,
+            "total_chunks": num_chunks,
+            "completed_chunks": 0,
+            "chunks": [chunk for chunk in chunks],  # Stocker les chunks complets
+            "llm_model": llm_model,
+            "orchestration_start_time": orchestration_start_time,
+            "strategy": strategy
+        }
+        
+        ttl = getattr(config, 'redis_enrichment_ttl', 3600)
+        redis_manager.store_metadata(transcription_id, chunks_metadata, ttl)
+        redis_manager.reset_completed_count(transcription_id)
+        
+        # 3. Créer une tâche pour chaque chunk
+        logger.info(
+            f"[{transcription_id}] 📤 DISTRIBUTED ORCHESTRATION | Step 2/3: Creating enrichment chunk tasks | "
+            f"Total chunks: {num_chunks} | "
+            f"Queue: enrichment | "
+            f"Tasks will be distributed automatically by Celery"
+        )
+        chunk_tasks = []
+        from celery import current_app as celery_current_app
+        
+        for i, chunk in enumerate(chunks):
+            chunk_task = celery_current_app.send_task(
+                'enrich_chunk',
+                args=[transcription_id, i, num_chunks],
+                queue='enrichment'
+            )
+            chunk_tasks.append(chunk_task.id)
+            logger.info(
+                f"[{transcription_id}] 📤 DISTRIBUTED ORCHESTRATION | Chunk {i+1}/{num_chunks} enqueued | "
+                f"Task ID: {chunk_task.id} | "
+                f"Chunk size: {sum(len(seg.get('text', '')) for seg in chunk)} chars | "
+                f"Waiting for available worker..."
+            )
+        
+        # 4. Stocker les IDs des tâches
+        redis_client = get_redis_client()
+        tasks_key = f"enrichment:{transcription_id}:chunk_tasks"
+        redis_client.setex(tasks_key, 3600, json.dumps(chunk_tasks))
+        
+        logger.info(
+            f"[{transcription_id}] ✅ DISTRIBUTED ORCHESTRATION | Step 3/3: All tasks created | "
+            f"Enrichment tasks: {num_chunks} | "
+            f"Next: Workers will process chunks in parallel"
+        )
+        
+        return {
+            "status": "orchestrated",
+            "transcription_id": transcription_id,
+            "num_chunks": num_chunks,
+            "chunk_tasks": chunk_tasks
+        }
+        
+    except Exception as e:
+        logger.error(f"[{transcription_id}] ❌ Orchestration error: {e}", exc_info=True)
+        try:
+            api_client = get_api_client()
+            api_client.update_transcription(transcription_id, {
+                "enrichment_status": "error",
+                "enrichment_error_message": f"Orchestration failed: {str(e)}"
+            })
+        except:
+            pass
+        raise
+
+
+@celery_app.task(
+    bind=True,
+    name='enrich_chunk',
+    max_retries=2,
+    default_retry_delay=30,
+    acks_late=True,
+    reject_on_worker_lost=True
+)
+def enrich_chunk_task(self, transcription_id: str, chunk_index: int, total_chunks: int):
+    """
+    Enrichit un seul chunk de segments.
+    
+    Args:
+        transcription_id: ID de la transcription parente
+        chunk_index: Index du chunk (0-based)
+        total_chunks: Nombre total de chunks
+    """
+    logger.info(
+        f"[{transcription_id}] 🎯 DISTRIBUTED CHUNK STARTED | "
+        f"Chunk: {chunk_index+1}/{total_chunks} | "
+        f"Worker: {config.instance_name} | "
+        f"Task ID: {self.request.id}"
+    )
+    start_time = time.time()
+    
+    try:
+        # Récupérer les métadonnées depuis Redis
+        redis_manager = get_redis_manager()
+        metadata = redis_manager.get_metadata(transcription_id)
+        
+        if not metadata:
+            raise ValueError(f"Metadata not found for transcription {transcription_id}")
+        
+        # Récupérer le chunk
+        chunks = metadata.get('chunks', [])
+        if chunk_index >= len(chunks):
+            raise ValueError(f"Chunk {chunk_index} not found in metadata")
+        
+        chunk = chunks[chunk_index]
+        llm_model = metadata.get('llm_model', config.llm_model)
+        
+        logger.info(
+            f"[{transcription_id}] ⚙️ DISTRIBUTED CHUNK | Worker {config.instance_name} processing | "
+            f"Chunk: {chunk_index+1}/{total_chunks} | "
+            f"Model: {llm_model} | "
+            f"Segments in chunk: {len(chunk)}"
+        )
+        
+        # Enrichir le chunk
+        enrichment_service = get_llm_service(model_name=llm_model)
+        enriched_chunk = enrichment_service.enrich_segments(chunk)
+        
+        processing_time = round(time.time() - start_time, 2)
+        
+        # Stocker le résultat dans Redis
+        result = {
+            "chunk_index": chunk_index,
+            "enriched_segments": enriched_chunk,
+            "processing_time": processing_time
+        }
+        
+        ttl = getattr(config, 'redis_enrichment_ttl', 3600)
+        redis_manager.store_chunk_result(transcription_id, chunk_index, result, ttl)
+        completed_count = redis_manager.increment_completed_count(transcription_id)
+        
+        logger.info(
+            f"[{transcription_id}] ✅ DISTRIBUTED CHUNK COMPLETED | "
+            f"Chunk: {chunk_index+1}/{total_chunks} | "
+            f"Worker: {config.instance_name} | "
+            f"Processing time: {processing_time}s | "
+            f"Progress: {completed_count}/{total_chunks} chunks done ({100*completed_count/total_chunks:.1f}%)"
+        )
+        
+        # Si tous les chunks sont terminés, déclencher l'agrégation
+        if completed_count >= total_chunks:
+            if redis_manager.acquire_aggregation_lock(transcription_id):
+                logger.info(
+                    f"[{transcription_id}] 🎉 DISTRIBUTED MODE | All chunks completed | "
+                    f"Total: {total_chunks} chunks | "
+                    f"All workers finished | "
+                    f"Triggering aggregation... (lock acquired by {config.instance_name})"
+                )
+                from celery import current_app as celery_current_app
+                aggregate_task = celery_current_app.send_task(
+                    'aggregate_enrichment_chunks',
+                    args=[transcription_id],
+                    queue='enrichment',
+                    countdown=1
+                )
+                logger.info(
+                    f"[{transcription_id}] ✅ DISTRIBUTED MODE | Aggregation task enqueued | "
+                    f"Task ID: {aggregate_task.id} | "
+                    f"Next: Reassembling all chunks"
+                )
+            else:
+                logger.info(
+                    f"[{transcription_id}] ℹ️ DISTRIBUTED MODE | All chunks completed but aggregation already triggered by another worker"
+                )
+        
+        return {
+            "status": "success",
+            "chunk_index": chunk_index,
+            "processing_time": processing_time
+        }
+        
+    except Exception as e:
+        logger.error(f"[{transcription_id}] ❌ Chunk {chunk_index+1} error: {e}", exc_info=True)
+        raise
+
+
+@celery_app.task(
+    bind=True,
+    name='aggregate_enrichment_chunks',
+    max_retries=2,
+    default_retry_delay=30,
+    acks_late=True
+)
+def aggregate_enrichment_chunks_task(self, transcription_id: str):
+    """
+    Réassemble les chunks enrichis en résultat final.
+    
+    Args:
+        transcription_id: ID de la transcription
+    """
+    logger.info(
+        f"[{transcription_id}] 🔗 DISTRIBUTED AGGREGATION STARTED | "
+        f"Worker: {config.instance_name} | "
+        f"Task ID: {self.request.id} | "
+        f"Will reassemble all completed chunks"
+    )
+    start_time = time.time()
+    
+    try:
+        redis_manager = get_redis_manager()
+        metadata = redis_manager.get_metadata(transcription_id)
+        
+        if not metadata:
+            raise ValueError(f"Metadata not found for transcription {transcription_id}")
+        
+        total_chunks = metadata['total_chunks']
+        
+        # Récupérer tous les résultats des chunks
+        logger.info(
+            f"[{transcription_id}] 📥 DISTRIBUTED AGGREGATION | Step 1/2: Collecting chunk results | "
+            f"Expected chunks: {total_chunks}"
+        )
+        all_enriched_segments = []
+        max_chunk_time = 0.0
+        
+        for i in range(total_chunks):
+            result = redis_manager.get_chunk_result(transcription_id, i)
+            if not result:
+                raise ValueError(f"Result not found for chunk {i} of transcription {transcription_id}")
+            
+            all_enriched_segments.extend(result['enriched_segments'])
+            chunk_time = result.get('processing_time', 0.0)
+            max_chunk_time = max(max_chunk_time, chunk_time)
+        
+        # Trier les segments par timestamp
+        all_enriched_segments.sort(key=lambda x: x.get('start', 0.0))
+        
+        # Calculer le temps réel écoulé
+        orchestration_start_time = metadata.get('orchestration_start_time')
+        if orchestration_start_time:
+            real_elapsed_time = round(time.time() - orchestration_start_time, 2)
+        else:
+            real_elapsed_time = max_chunk_time
+        
+        logger.info(
+            f"[{transcription_id}] ✅ DISTRIBUTED AGGREGATION | Step 1/2: All results collected | "
+            f"Segments: {len(all_enriched_segments)} | "
+            f"Max chunk time: {max_chunk_time:.1f}s (parallel) | "
+            f"Real elapsed time: {real_elapsed_time:.1f}s"
+        )
+        
+        # Construire le texte enrichi complet
+        enriched_text = " ".join(
+            seg.get('enriched_text', seg.get('text', '')) 
+            for seg in all_enriched_segments 
+            if seg.get('enriched_text', seg.get('text', '')).strip()
+        )
+        
+        # Sauvegarder le résultat final
+        api_client = get_api_client()
+        aggregation_time = round(time.time() - start_time, 2)
+        
+        if orchestration_start_time:
+            total_processing_time = round(time.time() - orchestration_start_time, 2)
+        else:
+            total_processing_time = round(max_chunk_time + aggregation_time, 2)
+        
+        api_client.update_transcription(transcription_id, {
+            "enrichment_status": "done",
+            "enriched_text": enriched_text.strip(),
+            "enriched_segments": json.dumps(all_enriched_segments),
+            "enrichment_processing_time": total_processing_time
+        })
+        
+        logger.info(
+            f"[{transcription_id}] ✅ DISTRIBUTED AGGREGATION | Step 2/2: Aggregation completed | "
+            f"Total segments: {len(all_enriched_segments)} | "
+            f"Real processing time: {total_processing_time:.1f}s (from orchestration start) | "
+            f"Max chunk time: {max_chunk_time:.1f}s | "
+            f"Aggregation time: {aggregation_time:.1f}s | "
+            f"Result saved to database"
+        )
+        
+        # Nettoyer les données Redis
+        try:
+            redis_manager.cleanup(transcription_id, total_chunks)
+        except Exception as cleanup_error:
+            logger.warning(f"[{transcription_id}] ⚠️ Cleanup error: {cleanup_error}")
+        
+        return {
+            "status": "success",
+            "transcription_id": transcription_id,
+            "segments_count": len(all_enriched_segments),
+            "total_processing_time": total_processing_time
+        }
+        
+    except Exception as e:
+        logger.error(f"[{transcription_id}] ❌ Aggregation error: {e}", exc_info=True)
+        try:
+            api_client = get_api_client()
+            api_client.update_transcription(transcription_id, {
+                "enrichment_status": "error",
+                "enrichment_error_message": f"Aggregation failed: {str(e)}"
+            })
+        except:
+            pass
+        raise
+
+
 if __name__ == "__main__":
     logger.info(f"🚀 Starting Celery enrichment worker: {config.instance_name}")
     celery_app.worker_main([
         'worker',
         f'--loglevel={config.log_level.lower()}',
-        f'--concurrency=2',
-        f'--hostname={config.instance_name}@%h'
+        f'--concurrency={config.max_workers}',
+        f'--hostname={config.instance_name}@%h',
+        '--without-gossip',
+        '--without-mingle',
+        '-Q', 'enrichment'
     ])
-

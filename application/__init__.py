@@ -1,2 +1,1 @@
-# Application Services
-
+"""Application layer for enrichment worker"""

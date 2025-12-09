@@ -1,2 +1,1 @@
-# Infrastructure
-
+"""Infrastructure layer for enrichment worker"""

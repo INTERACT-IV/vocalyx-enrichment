@@ -1,0 +1,126 @@
+# =====================================================================
+# Vocalyx Enrichment - Configuration File Example
+# =====================================================================
+
+[CORE]
+# Nom unique de cette instance de worker
+instance_name = enrichment-worker-01
+
+[API]
+# URL de vocalyx-api pour communiquer
+# En local: http://localhost:8000
+# En Docker: http://haproxy:8000
+url = http://localhost:8000
+
+# Timeout des requêtes HTTP (en secondes)
+timeout = 60
+
+[CELERY]
+# Configuration Celery (DOIT correspondre à vocalyx-api)
+# En Docker: utiliser le nom de service (redis)
+# En local: utiliser localhost ou l'IP
+broker_url = redis://redis:6379/0
+result_backend = redis://redis:6379/0
+
+[REDIS_ENRICHMENT]
+# DB Redis dédiée pour les opérations d'enrichissement (isolation des données)
+# Utilise DB 3 par défaut pour isoler des opérations Celery (DB 0) et Transcription (DB 2)
+# Format: redis://host:port/db_number
+# En Docker: utiliser le nom de service (redis)
+# En local: utiliser localhost ou l'IP
+url = redis://redis:6379/3
+
+# Compression des données JSON (réduit la mémoire et le réseau)
+# true: Compresse avec gzip (économise ~60-70% de mémoire)
+# false: Stocke en JSON brut (plus rapide mais plus de mémoire)
+compress_data = true
+
+# TTL par défaut pour les chunks (en secondes)
+# Les données expirent automatiquement après ce délai
+default_ttl = 3600
+
+[LLM]
+# Modèle LLM à utiliser (fichier .gguf ou nom de modèle recommandé)
+# Modèles recommandés: phi-3-mini, phi-3-medium, mistral-7b-instruct, llama-3-8b-instruct, gemma-2b
+# Recommandé: phi-3-mini (léger et rapide sur CPU, ~2.3 GB)
+# Le modèle sera cherché dans shared/models/enrichment/ puis téléchargé si absent
+model = phi-3-mini
+
+# Répertoire des modèles (par défaut: shared/models/enrichment pour structure vocalyx-all)
+# models_dir = ./shared/models/enrichment
+
+# Device de calcul
+# Options: cpu (recommandé pour CPU-only)
+device = cpu
+
+# Type de calcul (pour information, la quantisation est dans le fichier .gguf)
+# Options: int8, int4, float16, float32
+# Les modèles GGUF sont déjà quantisés (Q4_K_M par défaut)
+compute_type = int8
+
+# Nombre maximum de tokens à générer
+max_tokens = 256
+
+# Temperature pour le sampling (0.0-1.0)
+# 0.0 = déterministe (recommandé pour production)
+# 0.7 = créatif mais cohérent
+temperature = 0.7
+
+# Top-p (nucleus sampling) - 0.0-1.0
+# 0.9 = bon équilibre
+top_p = 0.9
+
+# Top-k - nombre de tokens à considérer
+# 40 = bon équilibre
+top_k = 40
+
+# Nombre de threads CPU (0 = auto-détection)
+# Laisser 0 pour utiliser tous les cores sauf 1
+n_threads = 0
+
+# Taille du contexte (nombre de tokens)
+# Plus grand = plus de mémoire mais meilleur contexte
+# Recommandé: 2048 pour CPU
+n_ctx = 2048
+
+# Taille du batch pour traitement CPU
+# Plus grand = plus rapide mais plus de mémoire
+# Recommandé: 512 pour CPU
+n_batch = 512
+
+[PERFORMANCE]
+# Nombre de workers Celery (concurrence)
+# Recommandé: entre 1 et 4 selon votre CPU
+max_workers = 2
+
+# Taille maximale d'un chunk en caractères
+# Chunks plus petits = meilleure parallélisation mais plus d'overhead
+# Chunks plus grands = moins d'overhead mais moins de parallélisation
+max_chunk_size = 500
+
+# Activer le cache de modèles
+# true: Réutilise les modèles déjà chargés (économise 10-30s par requête)
+# false: Recharge le modèle à chaque fois
+enable_cache = true
+
+# Nombre maximum de modèles à garder en cache
+# Recommandé: 1-2 pour économiser la RAM
+cache_max_models = 2
+
+[LOGGING]
+# Niveau de log: DEBUG, INFO, WARNING, ERROR, CRITICAL
+level = INFO
+
+# Activer les logs dans un fichier
+file_enabled = true
+
+# Chemin du fichier de log
+file_path = /app/logs/vocalyx-enrichment.log
+
+# Activer les couleurs dans la console
+colored = true
+
+[SECURITY]
+# Clé secrète pour la communication avec l'API (DOIT être identique à vocalyx-api)
+# ⚠️ CHANGER CETTE VALEUR EN PRODUCTION
+internal_api_key = SuperSecretCode123

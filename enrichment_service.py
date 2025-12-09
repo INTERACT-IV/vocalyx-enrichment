@@ -1,281 +1,358 @@
 """
-EnrichmentService - Service pour l'enrichissement des transcriptions avec LLM (llama-cpp-python)
+Service d'enrichissement de transcription avec modèles LLM
+Optimisé pour CPU avec quantisation GGUF via llama-cpp-python
+Production-ready pour environnement CPU-only
 """
 
 import logging
-import json
-import re
-from typing import Dict, Optional
+import os
 from pathlib import Path
-from llama_cpp import Llama
+from typing import List, Dict, Optional
 
-logger = logging.getLogger("vocalyx.enrichment")
+try:
+    import psutil
+    PSUTIL_AVAILABLE = True
+except ImportError:
+    PSUTIL_AVAILABLE = False
+
+from infrastructure.models.model_manager import ModelManager
+
+logger = logging.getLogger("vocalyx")
+
+if not PSUTIL_AVAILABLE:
+    logger.warning("⚠️ psutil not available, memory monitoring disabled")
 
 
 class EnrichmentService:
-    """Service pour enrichir les transcriptions avec un LLM local (GGUF)"""
+    """Service d'enrichissement utilisant des modèles LLM via llama-cpp-python"""
     
-    def __init__(self, model_name: str = "Phi-3-mini-4k-instruct-q4.gguf", models_dir: Path = None, device: str = "cpu"):
+    def __init__(self, config, model_name: str = None):
         """
-        Initialise le service d'enrichissement avec un modèle LLM local.
+        Initialise le service d'enrichissement.
         
         Args:
-            model_name: Nom du fichier modèle GGUF (ex: "Phi-3-mini-4k-instruct-q4.gguf")
-            models_dir: Répertoire contenant les modèles (défaut: ./models/enrichment)
-            device: Device à utiliser ("cpu" uniquement pour GGUF)
+            config: Configuration du worker
+            model_name: Nom du modèle LLM à utiliser (chemin vers fichier .gguf)
         """
-        self.model_name = model_name
-        self.device = device
-        self.models_dir = models_dir or Path("/app/models/enrichment")
-        self.model_path = self.models_dir / model_name
-        self.llm = None
+        self.config = config
+        self.model_name = model_name or getattr(config, 'llm_model', 'phi-3-mini')
+        self.model = None
+        self.tokenizer = None
+        self.device = getattr(config, 'llm_device', 'cpu')
+        self.compute_type = getattr(config, 'llm_compute_type', 'int8')
+        self.max_tokens = getattr(config, 'llm_max_tokens', 256)
+        self.temperature = getattr(config, 'llm_temperature', 0.7)
+        self.top_p = getattr(config, 'llm_top_p', 0.9)
+        self.top_k = getattr(config, 'llm_top_k', 40)
         
-        logger.info(f"Initializing EnrichmentService with model: {self.model_path} (device: {device})")
-        self._load_model()
+        # Paramètres CPU
+        n_threads_config = getattr(config, 'llm_n_threads', None)
+        if n_threads_config == 0:
+            n_threads_config = None
+        self.n_threads = n_threads_config  # Auto-détecté si None
+        self.n_ctx = getattr(config, 'llm_n_ctx', 2048)  # Contexte maximum
+        self.n_batch = getattr(config, 'llm_n_batch', 512)  # Batch size pour CPU
+        
+        # Détecter le nombre de threads CPU si non spécifié
+        if self.n_threads is None:
+            cpu_count = os.cpu_count() or 4
+            # Utiliser tous les cores sauf 1 pour laisser de la marge
+            self.n_threads = max(1, cpu_count - 1)
+        
+        # Gestionnaire de modèles
+        # Par défaut, utiliser shared/models/enrichment (structure vocalyx-all)
+        models_dir = getattr(config, 'llm_models_dir', './shared/models/enrichment')
+        self.model_manager = ModelManager(models_dir=models_dir)
+        
+        logger.info(
+            f"🎯 EnrichmentService initialized | "
+            f"Model: {self.model_name} | "
+            f"Device: {self.device} | "
+            f"Compute: {self.compute_type} | "
+            f"Threads: {self.n_threads} | "
+            f"Context: {self.n_ctx}"
+        )
     
     def _load_model(self):
-        """Charge le modèle LLM GGUF local"""
+        """Charge le modèle LLM GGUF via llama-cpp-python (lazy loading)"""
+        if self.model is not None:
+            return
+        
         try:
-            if not self.model_path.exists():
-                raise FileNotFoundError(f"Model file not found: {self.model_path}")
+            logger.info(f"🚀 Loading LLM model: {self.model_name}...")
             
-            logger.info(f"Loading model from {self.model_path}...")
+            # Obtenir le chemin du modèle via le gestionnaire
+            model_path = self.model_manager.get_model_path(self.model_name)
             
-            # Charger le modèle GGUF avec llama-cpp-python
-            self.llm = Llama(
-                model_path=str(self.model_path),
-                n_ctx=2048,  # Contexte de 2048 tokens
-                n_threads=4,  # 4 threads pour CPU
-                n_gpu_layers=0,  # CPU only
-                verbose=False
+            # Vérifier si le modèle existe
+            if not model_path.exists():
+                logger.warning(
+                    f"⚠️ Model not found at: {model_path}\n"
+                    f"   Searching in shared directories..."
+                )
+                
+                # Le gestionnaire a déjà cherché dans shared/, mais on peut essayer de télécharger
+                # seulement si c'est un modèle recommandé et qu'on a vraiment besoin
+                if self.model_name in self.model_manager.RECOMMENDED_MODELS:
+                    logger.info(f"📥 Model not found locally, attempting download...")
+                    try:
+                        model_path = self.model_manager.download_model(self.model_name)
+                    except Exception as download_error:
+                        logger.error(
+                            f"❌ Failed to download model {self.model_name}: {download_error}\n"
+                            f"   Please ensure the model file exists in:\n"
+                            f"   - {self.model_manager.models_dir}\n"
+                            f"   - ./shared/models/enrichment/\n"
+                            f"   Or provide the full path to the .gguf file."
+                        )
+                        raise
+                else:
+                    raise FileNotFoundError(
+                        f"Model file not found: {model_path}\n"
+                        f"Please ensure the model exists or provide the correct path."
+                    )
+            
+            # Vérifier la santé du modèle
+            if not self.model_manager.check_model_health(model_path):
+                raise ValueError(f"Model health check failed: {model_path}")
+            
+            model_path_str = str(model_path.absolute())
+            
+            # Importer llama-cpp-python
+            try:
+                from llama_cpp import Llama
+            except ImportError as e:
+                import sys
+                raise ImportError(
+                    f"llama-cpp-python is not installed or not accessible.\n"
+                    f"Error: {e}\n"
+                    f"Python: {sys.executable}\n"
+                    f"Python version: {sys.version}\n"
+                    f"Install it with: pip3 install llama-cpp-python\n"
+                    f"Or verify installation with: python3 -c 'import llama_cpp'"
+                )
+            
+            # Déterminer le nombre de threads GPU (0 pour CPU-only)
+            n_gpu_layers = 0  # CPU-only
+            
+            # Charger le modèle avec optimisations CPU
+            logger.info(
+                f"📦 Loading GGUF model | "
+                f"Path: {model_path_str} | "
+                f"Threads: {self.n_threads} | "
+                f"Context: {self.n_ctx} | "
+                f"Batch: {self.n_batch}"
             )
             
-            logger.info(f"✅ Model {self.model_name} loaded successfully")
-        except Exception as e:
-            logger.error(f"❌ Failed to load model {self.model_path}: {e}", exc_info=True)
-            raise
-    
-    def _generate_text(self, prompt: str, max_tokens: int = 200, temperature: float = 0.7) -> str:
-        """
-        Génère du texte avec le modèle LLM.
-        
-        Args:
-            prompt: Prompt à envoyer au modèle
-            max_tokens: Nombre maximum de tokens à générer
-            temperature: Température pour la génération (0.0-1.0)
+            self.model = Llama(
+                model_path=model_path_str,
+                n_ctx=self.n_ctx,  # Taille du contexte
+                n_threads=self.n_threads,  # Nombre de threads CPU
+                n_batch=self.n_batch,  # Taille du batch
+                n_gpu_layers=n_gpu_layers,  # 0 = CPU-only
+                verbose=False,  # Désactiver les logs verbeux de llama.cpp
+                use_mmap=True,  # Memory mapping pour économiser la RAM
+                use_mlock=False,  # Ne pas verrouiller en mémoire (permet swap si nécessaire)
+            )
             
-        Returns:
-            str: Texte généré
-        """
-        try:
-            # Formater le prompt pour les modèles instruct
-            if "instruct" in self.model_name.lower():
-                # Format pour modèles instruct (Mistral, Phi-3)
-                formatted_prompt = f"<s>[INST] {prompt} [/INST]"
+            # Vérifier la mémoire utilisée (si psutil disponible)
+            if PSUTIL_AVAILABLE:
+                mem_info = psutil.virtual_memory()
+                logger.info(
+                    f"✅ LLM model loaded successfully | "
+                    f"Memory used: {mem_info.used / 1024**3:.2f} GB / {mem_info.total / 1024**3:.2f} GB "
+                    f"({mem_info.percent:.1f}%)"
+                )
             else:
-                formatted_prompt = prompt
+                logger.info("✅ LLM model loaded successfully")
             
-            # Générer la réponse
-            response = self.llm(
-                formatted_prompt,
-                max_tokens=max_tokens,
-                temperature=temperature,
-                stop=["</s>", "[INST]", "[/INST]"],
-                echo=False
-            )
-            
-            generated_text = response["choices"][0]["text"].strip()
-            return generated_text
         except Exception as e:
-            logger.error(f"Error generating text: {e}", exc_info=True)
+            logger.error(f"❌ Failed to load LLM model {self.model_name}: {e}", exc_info=True)
             raise
     
-    def generate_title(self, transcription_text: str, custom_prompt: Optional[str] = None) -> str:
+    def enrich_text(self, text: str, context: Optional[str] = None) -> str:
         """
-        Génère un titre pour la transcription.
+        Enrichit un texte avec le modèle LLM.
         
         Args:
-            transcription_text: Texte de la transcription
-            custom_prompt: Prompt personnalisé (optionnel)
+            text: Texte à enrichir
+            context: Contexte optionnel (texte précédent)
             
         Returns:
-            str: Titre généré
+            Texte enrichi
         """
-        prompt = custom_prompt or "Génère un titre court et accrocheur (maximum 10 mots) pour cette transcription:"
-        full_prompt = f"{prompt}\n\n{transcription_text[:500]}"
+        if not text or not text.strip():
+            return text
         
         try:
-            title = self._generate_text(full_prompt, max_tokens=30, temperature=0.7)
-            # Nettoyer le titre (prendre la première phrase, max 10 mots)
-            words = title.split()[:10]
-            return " ".join(words)
+            self._load_model()
+            
+            # Construire le prompt
+            prompt = self._build_prompt(text, context)
+            
+            # Générer avec le modèle
+            # Utiliser les paramètres optimisés pour CPU
+            response = self.model(
+                prompt,
+                max_tokens=self.max_tokens,
+                temperature=self.temperature,
+                top_p=self.top_p,
+                top_k=self.top_k,
+                repeat_penalty=1.1,  # Éviter la répétition
+                stop=["</s>", "\n\n\n"],  # Tokens d'arrêt
+                echo=False,  # Ne pas retourner le prompt
+            )
+            
+            # Extraire le texte généré
+            if isinstance(response, dict):
+                enriched_text = response.get('choices', [{}])[0].get('text', '').strip()
+            else:
+                # Fallback si le format est différent
+                enriched_text = str(response).strip()
+            
+            # Nettoyer le texte (supprimer les tokens d'arrêt qui auraient pu passer)
+            enriched_text = enriched_text.replace('</s>', '').strip()
+            
+            # Si le modèle n'a rien généré ou a généré quelque chose de suspect,
+            # retourner le texte original
+            if not enriched_text or len(enriched_text) < len(text) * 0.5:
+                logger.warning(
+                    f"⚠️ Model generated suspicious output (too short or empty), "
+                    f"returning original text"
+                )
+                return text
+            
+            logger.debug(
+                f"✅ Text enriched | "
+                f"Input: {len(text)} chars | "
+                f"Output: {len(enriched_text)} chars"
+            )
+            return enriched_text
+            
         except Exception as e:
-            logger.error(f"Error generating title: {e}")
-            return "Titre généré automatiquement"
+            logger.error(f"❌ Error enriching text: {e}", exc_info=True)
+            # En cas d'erreur, retourner le texte original
+            return text
     
-    def generate_summary(self, transcription_text: str, custom_prompt: Optional[str] = None) -> str:
+    def enrich_segments(self, segments: List[Dict], context: Optional[List[Dict]] = None) -> List[Dict]:
         """
-        Génère un résumé de moins de 100 mots.
+        Enrichit une liste de segments de transcription.
         
         Args:
-            transcription_text: Texte de la transcription
-            custom_prompt: Prompt personnalisé (optionnel)
+            segments: Liste de segments à enrichir
+            context: Segments précédents pour le contexte
             
         Returns:
-            str: Résumé généré
+            Liste de segments enrichis
         """
-        prompt = custom_prompt or "Génère un résumé concis de moins de 100 mots pour cette transcription:"
-        full_prompt = f"{prompt}\n\n{transcription_text}"
+        if not segments:
+            return []
         
         try:
-            summary = self._generate_text(full_prompt, max_tokens=150, temperature=0.7)
-            # Limiter à 100 mots
-            words = summary.split()[:100]
-            return " ".join(words)
+            self._load_model()
+            
+            enriched_segments = []
+            previous_text = None
+            
+            for i, segment in enumerate(segments):
+                text = segment.get('text', '').strip()
+                if not text:
+                    enriched_segments.append(segment)
+                    continue
+                
+                # Utiliser le texte précédent comme contexte
+                context_text = previous_text if context is None else None
+                
+                # Enrichir le segment
+                enriched_text = self.enrich_text(text, context_text)
+                
+                # Créer le segment enrichi
+                enriched_segment = segment.copy()
+                enriched_segment['enriched_text'] = enriched_text
+                enriched_segment['original_text'] = text
+                
+                enriched_segments.append(enriched_segment)
+                previous_text = text
+            
+            logger.info(f"✅ Enriched {len(enriched_segments)} segments")
+            return enriched_segments
+            
         except Exception as e:
-            logger.error(f"Error generating summary: {e}")
-            return "Résumé généré automatiquement"
+            logger.error(f"❌ Error enriching segments: {e}", exc_info=True)
+            # En cas d'erreur, retourner les segments originaux
+            return segments
     
-    def generate_satisfaction_score(self, transcription_text: str, custom_prompt: Optional[str] = None) -> Dict:
+    def _build_prompt(self, text: str, context: Optional[str] = None) -> str:
         """
-        Génère un score de satisfaction de 1 à 10 avec justification.
+        Construit le prompt pour le modèle LLM.
+        Adapté pour les modèles instruct (Phi-3, Mistral, Llama, etc.)
         
         Args:
-            transcription_text: Texte de la transcription
-            custom_prompt: Prompt personnalisé (optionnel)
+            text: Texte à enrichir
+            context: Contexte optionnel
             
         Returns:
-            dict: {"score": int, "justification": str}
+            Prompt formaté selon le format du modèle
         """
-        prompt = custom_prompt or "Analyse cette transcription et attribue un score de satisfaction client de 1 à 10. Réponds en JSON: {\"score\": nombre}"
-        full_prompt = f"{prompt}\n\n{transcription_text}"
+        # Détecter le type de modèle depuis le nom
+        model_lower = self.model_name.lower()
         
-        try:
-            response = self._generate_text(full_prompt, max_tokens=100, temperature=0.5)
+        # Format pour Phi-3
+        if 'phi-3' in model_lower or 'phi3' in model_lower:
+            system_prompt = "Tu es un assistant qui améliore et enrichit des transcriptions audio en français. Tu corriges les erreurs, améliores la ponctuation et la structure, tout en conservant le sens original."
+            if context:
+                user_prompt = f"Contexte précédent: {context}\n\nTexte à enrichir: {text}\n\nEnrichis ce texte:"
+            else:
+                user_prompt = f"Enrichis et améliore ce texte de transcription: {text}"
             
-            # Essayer d'extraire le JSON de la réponse
+            prompt = f"<|system|>\n{system_prompt}<|end|>\n<|user|>\n{user_prompt}<|end|>\n<|assistant|>\n"
+        
+        # Format pour Mistral
+        elif 'mistral' in model_lower:
+            system_prompt = "Tu es un assistant qui améliore et enrichit des transcriptions audio en français."
+            if context:
+                user_prompt = f"Contexte: {context}\n\nTexte: {text}\n\nEnrichis ce texte:"
+            else:
+                user_prompt = f"Enrichis et améliore ce texte de transcription: {text}"
+            
+            prompt = f"<s>[INST] {system_prompt}\n\n{user_prompt} [/INST]"
+        
+        # Format pour Llama 3
+        elif 'llama-3' in model_lower or 'llama3' in model_lower:
+            system_prompt = "Tu es un assistant qui améliore et enrichit des transcriptions audio en français."
+            if context:
+                user_prompt = f"Contexte: {context}\n\nTexte: {text}\n\nEnrichis ce texte:"
+            else:
+                user_prompt = f"Enrichis et améliore ce texte de transcription: {text}"
+            
+            prompt = f"<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\n{system_prompt}<|eot_id|><|start_header_id|>user<|end_header_id|>\n\n{user_prompt}<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n"
+        
+        # Format générique (ChatML)
+        else:
+            system_prompt = "Tu es un assistant qui améliore et enrichit des transcriptions audio en français. Tu corriges les erreurs, améliores la ponctuation et la structure, tout en conservant le sens original."
+            if context:
+                user_prompt = f"Contexte précédent: {context}\n\nTexte à enrichir: {text}\n\nEnrichis ce texte:"
+            else:
+                user_prompt = f"Enrichis et améliore ce texte de transcription: {text}"
+            
+            prompt = f"<|im_start|>system\n{system_prompt}<|im_end|>\n<|im_start|>user\n{user_prompt}<|im_end|>\n<|im_start|>assistant\n"
+        
+        return prompt
+    
+    def cleanup(self):
+        """Nettoie les ressources du modèle"""
+        if self.model is not None:
             try:
-                start = response.find('{')
-                end = response.rfind('}') + 1
-                if start >= 0 and end > start:
-                    json_str = response[start:end]
-                    data = json.loads(json_str)
-                    return {
-                        "score": int(data.get("score", 5))
-                    }
-            except:
-                pass
-            
-            # Fallback: extraire un score simple
-            score_match = re.search(r'\b([1-9]|10)\b', response)
-            score = int(score_match.group(1)) if score_match else 5
-            return {
-                "score": score
-            }
-        except Exception as e:
-            logger.error(f"Error generating satisfaction score: {e}")
-            return {"score": 5}
-    
-    def generate_bullet_points(self, transcription_text: str, custom_prompt: Optional[str] = None) -> list:
-        """
-        Génère des bullet points pour la transcription.
-        
-        Args:
-            transcription_text: Texte de la transcription
-            custom_prompt: Prompt personnalisé (optionnel)
-            
-        Returns:
-            list: Liste de bullet points
-        """
-        prompt = custom_prompt or "Extrais les points clés de cette transcription sous forme de puces. Réponds en JSON: {\"points\": [\"point 1\", \"point 2\", ...]}"
-        full_prompt = f"{prompt}\n\n{transcription_text}"
-        
-        try:
-            response = self._generate_text(full_prompt, max_tokens=200, temperature=0.7)
-            
-            # Essayer d'extraire le JSON de la réponse
-            try:
-                start = response.find('{')
-                end = response.rfind('}') + 1
-                if start >= 0 and end > start:
-                    json_str = response[start:end]
-                    data = json.loads(json_str)
-                    return data.get("points", [])
-            except:
-                pass
-            
-            # Fallback: extraire les points avec regex
-            points = re.findall(r'[-•*]\s*(.+?)(?=\n|$)', response)
-            if not points:
-                # Essayer d'extraire des lignes numérotées
-                points = re.findall(r'\d+[\.\)]\s*(.+?)(?=\n|$)', response)
-            return points[:4] if points else ["Point clé généré automatiquement"]
-        except Exception as e:
-            logger.error(f"Error generating bullet points: {e}")
-            return ["Point clé généré automatiquement"]
-    
-    def enrich_transcription(
-        self,
-        transcription_text: str,
-        prompts: Optional[Dict[str, str]] = None
-    ) -> Dict:
-        """
-        Enrichit une transcription complète en générant titre, résumé, score et bullet points.
-        
-        Args:
-            transcription_text: Texte de la transcription
-            prompts: Dictionnaire avec les prompts personnalisés (optionnel)
-            
-        Returns:
-            dict: Données d'enrichissement avec temps individuels
-        """
-        import time
-        
-        logger.info("Starting enrichment...")
-        enrichment_start_time = time.time()
-        
-        # Utiliser les prompts personnalisés ou les defaults
-        title_prompt = prompts.get("title") if prompts and isinstance(prompts, dict) else None
-        summary_prompt = prompts.get("summary") if prompts and isinstance(prompts, dict) else None
-        satisfaction_prompt = prompts.get("satisfaction") if prompts and isinstance(prompts, dict) else None
-        bullet_points_prompt = prompts.get("bullet_points") if prompts and isinstance(prompts, dict) else None
-        
-        # Générer tous les éléments avec mesure du temps
-        logger.info("Generating title...")
-        title_start = time.time()
-        title = self.generate_title(transcription_text, title_prompt)
-        title_time = round(time.time() - title_start, 2)
-        
-        logger.info("Generating summary...")
-        summary_start = time.time()
-        summary = self.generate_summary(transcription_text, summary_prompt)
-        summary_time = round(time.time() - summary_start, 2)
-        
-        logger.info("Generating satisfaction score...")
-        satisfaction_start = time.time()
-        satisfaction = self.generate_satisfaction_score(transcription_text, satisfaction_prompt)
-        satisfaction_time = round(time.time() - satisfaction_start, 2)
-        
-        logger.info("Generating bullet points...")
-        bullet_points_start = time.time()
-        bullet_points = self.generate_bullet_points(transcription_text, bullet_points_prompt)
-        bullet_points_time = round(time.time() - bullet_points_start, 2)
-        
-        total_enrichment_time = round(time.time() - enrichment_start_time, 2)
-        
-        enrichment_data = {
-            "title": title,
-            "summary": summary,
-            "satisfaction_score": satisfaction["score"],
-            "bullet_points": bullet_points[:4],  # Limiter à 4 points maximum
-            "timing": {
-                "title_time": title_time,
-                "summary_time": summary_time,
-                "satisfaction_time": satisfaction_time,
-                "bullet_points_time": bullet_points_time,
-                "total_time": total_enrichment_time
-            }
-        }
-        
-        logger.info(f"✅ Enrichment completed in {total_enrichment_time}s (title: {title_time}s, summary: {summary_time}s, score: {satisfaction_time}s, bullets: {bullet_points_time}s)")
-        return enrichment_data
+                # llama-cpp-python libère automatiquement les ressources
+                # mais on peut forcer la libération
+                del self.model
+                self.model = None
+                
+                # Forcer le garbage collection
+                import gc
+                gc.collect()
+                
+                logger.info("🧹 EnrichmentService cleaned up")
+            except Exception as e:
+                logger.warning(f"⚠️ Error during cleanup: {e}")
+                self.model = None
