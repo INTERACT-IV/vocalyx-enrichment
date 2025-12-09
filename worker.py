@@ -245,13 +245,16 @@ def enrich_transcription_task(self, transcription_id: str, use_distributed: bool
     
     # Vérifier si on doit utiliser le mode distribué
     if use_distributed is None:
-        # Décider automatiquement : distribué si plus de 20 segments
-        use_distributed = len(segments) > 20
+        # Décider automatiquement : distribué si plus de X segments (configurable)
+        # Par défaut, utiliser le mode distribué si plus de 10 segments (plus agressif)
+        distribution_threshold = getattr(config, 'enrichment_distribution_threshold', 10)
+        use_distributed = len(segments) > distribution_threshold
         logger.info(
             f"[{transcription_id}] 📊 DISTRIBUTION DECISION (worker) | "
             f"Segments: {len(segments)} | "
-            f"Threshold: 20 | "
-            f"Mode: {'DISTRIBUTED' if use_distributed else 'CLASSIC'}"
+            f"Threshold: {distribution_threshold} | "
+            f"Mode: {'DISTRIBUTED' if use_distributed else 'CLASSIC'} | "
+            f"Reason: {'Segments > threshold' if use_distributed else 'Segments <= threshold'}"
         )
     
     # Si mode distribué, déléguer à orchestrate_distributed_enrichment
@@ -322,14 +325,18 @@ def enrich_transcription_task(self, transcription_id: str, use_distributed: bool
         
         # Mettre à jour avec les résultats
         logger.info(f"[{transcription_id}] 💾 Saving results to API...")
-        api_client.update_transcription(transcription_id, {
+        update_data = {
+            "status": "done",  # Mettre à jour le statut principal (comme transcription)
             "enrichment_status": "done",
             "enriched_text": enriched_text,
             "enriched_segments": json.dumps(enriched_segments),
             "enrichment_processing_time": processing_time
-        })
+        }
+        logger.info(f"[{transcription_id}] 📤 API Update payload: {json.dumps({k: v if k != 'enriched_segments' else f'<{len(enriched_segments)} segments>' for k, v in update_data.items()})}")
         
-        logger.info(f"[{transcription_id}] 💾 Results saved to API")
+        response = api_client.update_transcription(transcription_id, update_data)
+        logger.info(f"[{transcription_id}] ✅ API Update response received: status={response.get('status')}, enrichment_status={response.get('enrichment_status')}")
+        logger.info(f"[{transcription_id}] 💾 Results saved to API successfully")
         
         return {
             "status": "success",
@@ -705,12 +712,17 @@ def aggregate_enrichment_chunks_task(self, transcription_id: str):
         else:
             total_processing_time = round(max_chunk_time + aggregation_time, 2)
         
-        api_client.update_transcription(transcription_id, {
+        update_data = {
+            "status": "done",  # Mettre à jour le statut principal (comme transcription)
             "enrichment_status": "done",
             "enriched_text": enriched_text.strip(),
             "enriched_segments": json.dumps(all_enriched_segments),
             "enrichment_processing_time": total_processing_time
-        })
+        }
+        logger.info(f"[{transcription_id}] 📤 DISTRIBUTED AGGREGATION | API Update payload: {json.dumps({k: v if k != 'enriched_segments' else f'<{len(all_enriched_segments)} segments>' for k, v in update_data.items()})}")
+        
+        response = api_client.update_transcription(transcription_id, update_data)
+        logger.info(f"[{transcription_id}] ✅ DISTRIBUTED AGGREGATION | API Update response: status={response.get('status')}, enrichment_status={response.get('enrichment_status')}")
         
         logger.info(
             f"[{transcription_id}] ✅ DISTRIBUTED AGGREGATION | Step 2/2: Aggregation completed | "

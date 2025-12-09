@@ -51,6 +51,8 @@ class Config:
         self.max_chunk_size = int(os.getenv('MAX_CHUNK_SIZE', '500'))
         self.enable_cache = os.getenv('ENABLE_CACHE', 'true').lower() == 'true'
         self.cache_max_models = int(os.getenv('CACHE_MAX_MODELS', '2'))
+        # Seuil pour activer le mode distribué (nombre de segments)
+        self.enrichment_distribution_threshold = int(os.getenv('ENRICHMENT_DISTRIBUTION_THRESHOLD', '10'))
         
         # Redis
         self.redis_enrichment_compress = os.getenv('REDIS_ENRICHMENT_COMPRESS', 'true').lower() == 'true'

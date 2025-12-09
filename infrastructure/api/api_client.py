@@ -5,6 +5,7 @@ VocalyxAPIClient - Client HTTP refactorisé pour communiquer avec vocalyx-api
 import logging
 from typing import Dict, Optional
 import httpx
+import json
 
 logger = logging.getLogger("vocalyx.enrichment")
 
@@ -105,13 +106,19 @@ class VocalyxAPIClient:
             dict: Transcription mise à jour
         """
         try:
+            # Logger les données envoyées (sans les segments complets pour éviter le spam)
+            log_data = {k: v if k != 'enriched_segments' else f'<{len(json.loads(v) if isinstance(v, str) else v)} segments>' for k, v in data.items()}
+            logger.debug(f"📤 PATCH /api/transcriptions/{transcription_id} | Data: {log_data}")
+            
             response = self.client.patch(
                 f"{self.base_url}/api/transcriptions/{transcription_id}",
                 json=data,
                 headers=self._get_headers()
             )
             response.raise_for_status()
-            return response.json()
+            result = response.json()
+            logger.debug(f"✅ PATCH /api/transcriptions/{transcription_id} | Response status: {response.status_code} | Updated fields: {list(data.keys())}")
+            return result
         except httpx.HTTPStatusError as e:
             # Logger les détails pour les erreurs 422 (validation)
             if e.response.status_code == 422:
