@@ -254,9 +254,9 @@ def enrich_transcription_task(self, transcription_id: str, use_distributed: bool
         for key, value in DEFAULT_ENRICHMENT_PROMPTS.items():
             logger.info(f"[{transcription_id}] 📝 PROMPTS | '{key}' (par défaut): {value[:100]}..." if len(value) > 100 else f"[{transcription_id}] 📝 PROMPTS | '{key}' (par défaut): {value}")
     
-    # Vérifier si l'enrichissement avancé est demandé
-    enhanced = transcription.get('enhanced', False)
-    logger.info(f"[{transcription_id}] 📝 PROMPTS | Enrichissement avancé (enhanced): {enhanced}")
+    # Vérifier si la correction du texte est demandée
+    text_correction = transcription.get('text_correction', False)
+    logger.info(f"[{transcription_id}] 📝 PROMPTS | Correction du texte (text_correction): {text_correction}")
     logger.info(f"[{transcription_id}] 📝 PROMPTS | ========== FIN LOGS PROMPTS ==========")
     
     # Récupérer les segments
@@ -448,7 +448,7 @@ def enrich_transcription_task(self, transcription_id: str, use_distributed: bool
         # Ajouter enriched_text si text_correction=true
         if text_correction:
             update_data["enriched_text"] = corrected_text
-        logger.info(f"[{transcription_id}] 📤 API Update payload: {json.dumps({k: v if k != 'enriched_segments' else f'<{len(enriched_segments)} segments>' for k, v in update_data.items()})}")
+        logger.info(f"[{transcription_id}] 📤 API Update payload: {json.dumps({k: v if k != 'enriched_segments' else f'<{len(corrected_segments)} segments>' for k, v in update_data.items()})}")
         
         response = api_client.update_transcription(transcription_id, update_data)
         logger.info(f"[{transcription_id}] ✅ API Update response received: status={response.get('status')}, enrichment_status={response.get('enrichment_status')}")
@@ -458,7 +458,7 @@ def enrich_transcription_task(self, transcription_id: str, use_distributed: bool
             "status": "success",
             "transcription_id": transcription_id,
             "processing_time": processing_time,
-            "segments_count": len(enriched_segments),
+            "segments_count": len(corrected_segments),
             "mode": "classic"
         }
         
