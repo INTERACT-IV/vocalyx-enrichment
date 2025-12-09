@@ -222,9 +222,33 @@ class EnrichmentService:
             title = self._generate_text(full_prompt, max_tokens=30, temperature=0.7)
             if not title or not title.strip():
                 return ""
-            # Nettoyer le titre (prendre la première phrase, max 10 mots)
+            
+            # Nettoyer le titre : supprimer les guillemets, prendre la première phrase, max 10 mots
+            title = title.strip()
+            
+            # Supprimer les guillemets au début et à la fin
+            if title.startswith('"') and title.endswith('"'):
+                title = title[1:-1]
+            elif title.startswith("'") and title.endswith("'"):
+                title = title[1:-1]
+            
+            # Prendre seulement la première phrase (jusqu'au premier point, exclamation, ou question)
+            first_sentence_match = re.search(r'^([^.!?]+[.!?]?)', title)
+            if first_sentence_match:
+                title = first_sentence_match.group(1).strip()
+            
+            # Supprimer les explications communes du modèle
+            title = re.sub(r'\s*(This title|Ce titre|Le titre|Title:).*$', '', title, flags=re.IGNORECASE)
+            title = re.sub(r'\s*(captures|reflète|décrit|represents).*$', '', title, flags=re.IGNORECASE)
+            
+            # Prendre maximum 10 mots
             words = title.split()[:10]
             result = " ".join(words).strip()
+            
+            # Nettoyer les ponctuations finales si ce n'est pas une phrase complète
+            if result and result[-1] in ['.', '!', '?'] and len(words) < 10:
+                result = result[:-1].strip()
+            
             return result if result else ""
         except Exception as e:
             logger.error(f"Error generating title: {e}", exc_info=True)
@@ -282,28 +306,69 @@ class EnrichmentService:
             if not response or not response.strip():
                 return {"score": 5, "justification": "Réponse vide"}
             
-            # Essayer d'extraire le JSON de la réponse
+            # Essayer d'extraire le JSON de la réponse (chercher le JSON le plus externe)
             try:
+                # Chercher tous les JSON imbriqués et prendre le plus externe
                 start = response.find('{')
-                end = response.rfind('}') + 1
-                if start >= 0 and end > start:
-                    json_str = response[start:end]
-                    data = json.loads(json_str)
-                    score = int(data.get("score", 5))
-                    justification = data.get("justification", response.strip())
-                    return {
-                        "score": score,
-                        "justification": justification
-                    }
+                if start >= 0:
+                    # Trouver la fin du JSON en comptant les accolades
+                    brace_count = 0
+                    end = start
+                    for i in range(start, len(response)):
+                        if response[i] == '{':
+                            brace_count += 1
+                        elif response[i] == '}':
+                            brace_count -= 1
+                            if brace_count == 0:
+                                end = i + 1
+                                break
+                    
+                    if end > start:
+                        json_str = response[start:end]
+                        data = json.loads(json_str)
+                        score = int(data.get("score", 5))
+                        justification = data.get("justification", "")
+                        
+                        # Nettoyer la justification : si elle contient un JSON, le parser
+                        if justification and justification.strip().startswith('{'):
+                            try:
+                                # Essayer de parser le JSON dans la justification
+                                nested_json = json.loads(justification)
+                                # Si c'est un JSON valide, prendre la justification de ce JSON
+                                if isinstance(nested_json, dict) and "justification" in nested_json:
+                                    justification = nested_json.get("justification", justification)
+                                elif isinstance(nested_json, dict) and "score" in nested_json:
+                                    # Si c'est un objet avec score, prendre juste le texte
+                                    justification = str(nested_json.get("justification", ""))
+                            except:
+                                # Si le parsing échoue, garder la justification originale
+                                pass
+                        
+                        # Nettoyer la justification : supprimer les échappements JSON
+                        if justification:
+                            justification = justification.replace('\\"', '"').replace("\\'", "'")
+                            # Limiter la longueur
+                            justification = justification[:200].strip()
+                        
+                        return {
+                            "score": max(1, min(10, score)),  # S'assurer que le score est entre 1 et 10
+                            "justification": justification if justification else "Score généré automatiquement"
+                        }
             except Exception as json_error:
-                logger.debug(f"Failed to parse JSON from satisfaction response: {json_error}")
+                logger.debug(f"Failed to parse JSON from satisfaction response: {json_error}, response: {response[:100]}")
             
             # Fallback: extraire un score simple
             score_match = re.search(r'\b([1-9]|10)\b', response)
             score = int(score_match.group(1)) if score_match else 5
+            # Extraire une justification simple (première phrase)
+            justification_match = re.search(r'[Jj]ustification[:\s]+(.+?)(?:\.|$|\n)', response)
+            if not justification_match:
+                justification_match = re.search(r'[Pp]arce que[:\s]+(.+?)(?:\.|$|\n)', response)
+            justification = justification_match.group(1).strip()[:200] if justification_match else response.strip()[:200]
+            
             return {
-                "score": score,
-                "justification": response.strip()[:200]  # Limiter la justification
+                "score": max(1, min(10, score)),
+                "justification": justification
             }
         except Exception as e:
             logger.error(f"Error generating satisfaction score: {e}", exc_info=True)
