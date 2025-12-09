@@ -210,17 +210,25 @@ class EnrichmentService:
         Returns:
             str: Titre généré
         """
+        if not transcription_text or not transcription_text.strip():
+            return ""
+        
         prompt = custom_prompt or "Génère un titre court et accrocheur (maximum 10 mots) pour cette transcription:"
-        full_prompt = f"{prompt}\n\n{transcription_text[:500]}"
+        # Limiter le texte à 500 caractères pour éviter les prompts trop longs
+        text_sample = transcription_text[:500] if len(transcription_text) > 500 else transcription_text
+        full_prompt = f"{prompt}\n\n{text_sample}"
         
         try:
             title = self._generate_text(full_prompt, max_tokens=30, temperature=0.7)
+            if not title or not title.strip():
+                return ""
             # Nettoyer le titre (prendre la première phrase, max 10 mots)
             words = title.split()[:10]
-            return " ".join(words)
+            result = " ".join(words).strip()
+            return result if result else ""
         except Exception as e:
-            logger.error(f"Error generating title: {e}")
-            return "Titre généré automatiquement"
+            logger.error(f"Error generating title: {e}", exc_info=True)
+            return ""
     
     def generate_summary(self, transcription_text: str, custom_prompt: Optional[str] = None) -> str:
         """
@@ -233,17 +241,23 @@ class EnrichmentService:
         Returns:
             str: Résumé généré
         """
+        if not transcription_text or not transcription_text.strip():
+            return ""
+        
         prompt = custom_prompt or "Génère un résumé concis de moins de 100 mots pour cette transcription:"
         full_prompt = f"{prompt}\n\n{transcription_text}"
         
         try:
             summary = self._generate_text(full_prompt, max_tokens=150, temperature=0.7)
+            if not summary or not summary.strip():
+                return ""
             # Limiter à 100 mots
             words = summary.split()[:100]
-            return " ".join(words)
+            result = " ".join(words).strip()
+            return result if result else ""
         except Exception as e:
-            logger.error(f"Error generating summary: {e}")
-            return "Résumé généré automatiquement"
+            logger.error(f"Error generating summary: {e}", exc_info=True)
+            return ""
     
     def generate_satisfaction_score(self, transcription_text: str, custom_prompt: Optional[str] = None) -> Dict:
         """
@@ -256,11 +270,17 @@ class EnrichmentService:
         Returns:
             dict: {"score": int, "justification": str}
         """
-        prompt = custom_prompt or "Analyse cette transcription et attribue un score de satisfaction client de 1 à 10. Réponds en JSON: {\"score\": nombre}"
+        if not transcription_text or not transcription_text.strip():
+            return {"score": 5, "justification": "Texte vide"}
+        
+        prompt = custom_prompt or "Analyse cette transcription et attribue un score de satisfaction client de 1 à 10. Justifie brièvement ton score. Format JSON: {\"score\": nombre, \"justification\": \"texte\"}"
         full_prompt = f"{prompt}\n\n{transcription_text}"
         
         try:
             response = self._generate_text(full_prompt, max_tokens=100, temperature=0.5)
+            
+            if not response or not response.strip():
+                return {"score": 5, "justification": "Réponse vide"}
             
             # Essayer d'extraire le JSON de la réponse
             try:
@@ -269,21 +289,25 @@ class EnrichmentService:
                 if start >= 0 and end > start:
                     json_str = response[start:end]
                     data = json.loads(json_str)
+                    score = int(data.get("score", 5))
+                    justification = data.get("justification", response.strip())
                     return {
-                        "score": int(data.get("score", 5))
+                        "score": score,
+                        "justification": justification
                     }
-            except:
-                pass
+            except Exception as json_error:
+                logger.debug(f"Failed to parse JSON from satisfaction response: {json_error}")
             
             # Fallback: extraire un score simple
             score_match = re.search(r'\b([1-9]|10)\b', response)
             score = int(score_match.group(1)) if score_match else 5
             return {
-                "score": score
+                "score": score,
+                "justification": response.strip()[:200]  # Limiter la justification
             }
         except Exception as e:
-            logger.error(f"Error generating satisfaction score: {e}")
-            return {"score": 5}
+            logger.error(f"Error generating satisfaction score: {e}", exc_info=True)
+            return {"score": 5, "justification": f"Erreur: {str(e)[:100]}"}
     
     def generate_bullet_points(self, transcription_text: str, custom_prompt: Optional[str] = None) -> list:
         """
@@ -296,11 +320,17 @@ class EnrichmentService:
         Returns:
             list: Liste de bullet points
         """
-        prompt = custom_prompt or "Extrais les points clés de cette transcription sous forme de puces. Réponds en JSON: {\"points\": [\"point 1\", \"point 2\", ...]}"
+        if not transcription_text or not transcription_text.strip():
+            return []
+        
+        prompt = custom_prompt or "Extrais les points clés de cette transcription sous forme de puces. Format JSON: {\"points\": [\"point 1\", \"point 2\", ...]}"
         full_prompt = f"{prompt}\n\n{transcription_text}"
         
         try:
             response = self._generate_text(full_prompt, max_tokens=200, temperature=0.7)
+            
+            if not response or not response.strip():
+                return []
             
             # Essayer d'extraire le JSON de la réponse
             try:
@@ -309,19 +339,24 @@ class EnrichmentService:
                 if start >= 0 and end > start:
                     json_str = response[start:end]
                     data = json.loads(json_str)
-                    return data.get("points", [])
-            except:
-                pass
+                    points = data.get("points", [])
+                    # Filtrer les points vides
+                    points = [p.strip() for p in points if p and p.strip()]
+                    return points[:4] if points else []
+            except Exception as json_error:
+                logger.debug(f"Failed to parse JSON from bullet points response: {json_error}")
             
             # Fallback: extraire les points avec regex
             points = re.findall(r'[-•*]\s*(.+?)(?=\n|$)', response)
             if not points:
                 # Essayer d'extraire des lignes numérotées
                 points = re.findall(r'\d+[\.\)]\s*(.+?)(?=\n|$)', response)
-            return points[:4] if points else ["Point clé généré automatiquement"]
+            # Filtrer et limiter
+            points = [p.strip() for p in points if p and p.strip()]
+            return points[:4] if points else []
         except Exception as e:
-            logger.error(f"Error generating bullet points: {e}")
-            return ["Point clé généré automatiquement"]
+            logger.error(f"Error generating bullet points: {e}", exc_info=True)
+            return []
     
     def enrich_transcription(
         self,
