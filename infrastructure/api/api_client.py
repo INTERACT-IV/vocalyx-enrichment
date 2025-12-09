@@ -53,10 +53,9 @@ class VocalyxAPIClient:
     
     def _get_headers(self) -> Dict[str, str]:
         """Génère les headers d'authentification interne"""
-        # Utiliser X-Internal-API-Key pour compatibilité avec l'API
+        # Utiliser X-Internal-Key pour cohérence avec transcription
         return {
-            "X-Internal-API-Key": self.internal_key,
-            "Content-Type": "application/json"
+            "X-Internal-Key": self.internal_key
         }
     
     def get_transcription(self, transcription_id: str) -> Optional[Dict]:
@@ -80,7 +79,15 @@ class VocalyxAPIClient:
             if e.response.status_code == 404:
                 logger.error(f"Transcription {transcription_id} not found")
                 return None
-            logger.error(f"HTTP error getting transcription: {e}")
+            # Logger les détails pour les erreurs 422 (validation)
+            if e.response.status_code == 422:
+                try:
+                    error_detail = e.response.json()
+                    logger.error(f"HTTP 422 error getting transcription {transcription_id}: {error_detail}")
+                except:
+                    logger.error(f"HTTP 422 error getting transcription {transcription_id}: {e.response.text}")
+            else:
+                logger.error(f"HTTP error getting transcription: {e}")
             raise
         except httpx.HTTPError as e:
             logger.error(f"Error getting transcription: {e}")
@@ -105,6 +112,17 @@ class VocalyxAPIClient:
             )
             response.raise_for_status()
             return response.json()
+        except httpx.HTTPStatusError as e:
+            # Logger les détails pour les erreurs 422 (validation)
+            if e.response.status_code == 422:
+                try:
+                    error_detail = e.response.json()
+                    logger.error(f"HTTP 422 error updating transcription {transcription_id}: {error_detail}")
+                except:
+                    logger.error(f"HTTP 422 error updating transcription {transcription_id}: {e.response.text}")
+            else:
+                logger.error(f"HTTP error updating transcription: {e}")
+            raise
         except httpx.HTTPError as e:
             logger.error(f"Error updating transcription: {e}")
             raise
