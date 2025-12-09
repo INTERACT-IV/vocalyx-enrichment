@@ -55,23 +55,44 @@ class ModelManager:
         Args:
             models_dir: Répertoire où stocker les modèles
         """
+        # Convertir les chemins relatifs en chemins absolus avec /app comme base (comme transcription)
+        # faster-whisper interprète les chemins relatifs comme des repo_id HuggingFace
+        if models_dir.startswith("./"):
+            # Enlever le préfixe ./ et construire le chemin absolu
+            relative_path = models_dir[2:]  # Enlever "./"
+            # Utiliser /app comme base (WORKDIR du conteneur Docker)
+            models_dir = f"/app/{relative_path}"
+        elif not models_dir.startswith("/") and not models_dir.startswith("openai/"):
+            # Si c'est un chemin relatif sans ./ (ex: "models/...")
+            # et que ce n'est pas un repo HuggingFace, le convertir en absolu
+            models_dir = f"/app/{models_dir}"
+        
         self.models_dir = Path(models_dir)
+        
         # Ne pas créer le répertoire s'il n'existe pas (il peut être dans shared/)
         if not self.models_dir.exists():
-            # Essayer de trouver le répertoire partagé
-            current_dir = Path.cwd()
-            shared_dir = current_dir.parent / 'shared' / 'models' / 'enrichment'
+            # Essayer de trouver le répertoire partagé dans /app/shared/models/enrichment
+            # (structure vocalyx-all dans Docker)
+            shared_dir = Path("/app/shared/models/enrichment")
             if shared_dir.exists():
                 logger.info(f"📁 Using shared models directory: {shared_dir}")
                 self.models_dir = shared_dir
             else:
-                # Créer le répertoire configuré
-                self.models_dir.mkdir(parents=True, exist_ok=True)
+                # Essayer aussi depuis le répertoire courant (pour développement local)
+                current_dir = Path.cwd()
+                shared_dir_local = current_dir / 'shared' / 'models' / 'enrichment'
+                if shared_dir_local.exists():
+                    logger.info(f"📁 Using shared models directory: {shared_dir_local}")
+                    self.models_dir = shared_dir_local
+                else:
+                    # Créer le répertoire configuré
+                    self.models_dir.mkdir(parents=True, exist_ok=True)
         logger.info(f"📁 Model manager initialized | Directory: {self.models_dir}")
     
     def get_model_path(self, model_name: str) -> Path:
         """
         Retourne le chemin vers un modèle.
+        Utilise la même logique que transcription_service pour trouver les modèles.
         
         Args:
             model_name: Nom du modèle ou chemin vers fichier .gguf
@@ -79,67 +100,89 @@ class ModelManager:
         Returns:
             Chemin Path vers le modèle
         """
+        # Si c'est un chemin absolu vers un fichier existant
         model_path = Path(model_name)
-        
-        # Si c'est un chemin absolu ou relatif vers un fichier existant
-        if model_path.is_absolute() or (model_path.exists() and model_path.is_file()):
+        if model_path.is_absolute() and model_path.exists() and model_path.is_file():
             return model_path
         
         # Si c'est un nom de modèle recommandé
         if model_name in self.RECOMMENDED_MODELS:
             model_info = self.RECOMMENDED_MODELS[model_name]
-            model_path = self.models_dir / model_info['filename']
+            filename = model_info['filename']
             
-            # Si le modèle n'existe pas dans le répertoire configuré,
-            # essayer de chercher dans le répertoire partagé (shared/models/enrichment)
-            if not model_path.exists():
-                # Chercher dans le répertoire partagé (structure vocalyx-all)
-                # Essayer plusieurs chemins possibles
-                current_dir = Path.cwd()
-                possible_shared_dirs = [
-                    self.models_dir.parent.parent / 'shared' / 'models' / 'enrichment',  # vocalyx-all/shared/models/enrichment
-                    current_dir / 'shared' / 'models' / 'enrichment',  # Depuis la racine du projet
-                    current_dir.parent / 'shared' / 'models' / 'enrichment',  # Depuis vocalyx-enrichment/
-                    Path('../shared/models/enrichment').resolve(),  # Chemin relatif résolu
-                    Path('./shared/models/enrichment').resolve(),  # Chemin relatif depuis cwd
-                ]
-                
-                for shared_models_dir in possible_shared_dirs:
-                    if shared_models_dir.exists():
-                        # Chercher le fichier exact
-                        shared_model_path = shared_models_dir / model_info['filename']
-                        if shared_model_path.exists():
-                            logger.info(f"📁 Found model in shared directory: {shared_model_path}")
-                            return shared_model_path
-                        
-                        # Essayer avec des variations du nom de fichier
-                        # Chercher tous les fichiers .gguf qui contiennent le nom du modèle
-                        model_search_terms = [
-                            model_name.lower().replace('-', '').replace('_', ''),
-                            'phi3' if 'phi-3' in model_name.lower() else model_name.lower(),
-                        ]
-                        
-                        for gguf_file in shared_models_dir.glob('*.gguf'):
-                            file_lower = gguf_file.name.lower()
-                            if any(term in file_lower for term in model_search_terms):
-                                logger.info(f"📁 Found matching model in shared directory: {gguf_file}")
-                                return gguf_file
+            # Chercher dans plusieurs emplacements (comme transcription)
+            # 1. Dans le répertoire configuré
+            model_path = self.models_dir / filename
+            if model_path.exists():
+                logger.info(f"📁 Found model in configured directory: {model_path}")
+                return model_path
             
+            # 2. Dans /app/shared/models/enrichment (Docker)
+            possible_dirs = [
+                Path("/app/shared/models/enrichment"),  # Docker (priorité)
+                Path("/app/models/enrichment"),  # Docker alternative
+            ]
+            
+            # 3. Depuis le répertoire courant (développement local)
+            current_dir = Path.cwd()
+            if current_dir != Path("/app"):  # Pas en Docker
+                possible_dirs.extend([
+                    current_dir / 'shared' / 'models' / 'enrichment',
+                    current_dir.parent / 'shared' / 'models' / 'enrichment',
+                    Path('./shared/models/enrichment').resolve(),
+                    Path('../shared/models/enrichment').resolve(),
+                ])
+            
+            # Chercher dans tous les répertoires possibles
+            for search_dir in possible_dirs:
+                if search_dir.exists():
+                    # Chercher le fichier exact
+                    candidate_path = search_dir / filename
+                    if candidate_path.exists():
+                        logger.info(f"📁 Found model in shared directory: {candidate_path}")
+                        return candidate_path
+                    
+                    # Essayer avec des variations du nom de fichier
+                    # Chercher tous les fichiers .gguf qui contiennent le nom du modèle
+                    model_search_terms = [
+                        model_name.lower().replace('-', '').replace('_', ''),
+                        'phi3' if 'phi-3' in model_name.lower() else model_name.lower(),
+                    ]
+                    
+                    for gguf_file in search_dir.glob('*.gguf'):
+                        file_lower = gguf_file.name.lower()
+                        if any(term in file_lower for term in model_search_terms):
+                            logger.info(f"📁 Found matching model in shared directory: {gguf_file}")
+                            return gguf_file
+            
+            # Si pas trouvé, retourner le chemin attendu (pour message d'erreur)
             return model_path
         
-        # Sinon, chercher dans le répertoire des modèles
-        model_path = self.models_dir / model_name
+        # Sinon, traiter comme un chemin de fichier
+        # Convertir les chemins relatifs en absolus avec /app comme base
+        if model_name.startswith("./"):
+            relative_path = model_name[2:]
+            model_path = Path(f"/app/{relative_path}")
+        elif not model_name.startswith("/") and not model_name.startswith("openai/"):
+            model_path = Path(f"/app/{model_name}")
+        else:
+            model_path = Path(model_name)
+        
+        # Ajouter l'extension .gguf si nécessaire
         if not model_path.suffix:
             model_path = model_path.with_suffix('.gguf')
         
-        # Si pas trouvé, chercher dans le répertoire partagé
-        if not model_path.exists():
-            shared_models_dir = self.models_dir.parent.parent / 'shared' / 'models' / 'enrichment'
-            if shared_models_dir.exists():
-                shared_model_path = shared_models_dir / model_path.name
-                if shared_model_path.exists():
-                    logger.info(f"📁 Found model in shared directory: {shared_model_path}")
-                    return shared_model_path
+        # Si le fichier existe, le retourner
+        if model_path.exists():
+            return model_path
+        
+        # Sinon, chercher dans /app/shared/models/enrichment
+        shared_dir = Path("/app/shared/models/enrichment")
+        if shared_dir.exists():
+            shared_model_path = shared_dir / model_path.name
+            if shared_model_path.exists():
+                logger.info(f"📁 Found model in shared directory: {shared_model_path}")
+                return shared_model_path
         
         return model_path
     

@@ -60,8 +60,8 @@ class EnrichmentService:
             self.n_threads = max(1, cpu_count - 1)
         
         # Gestionnaire de modèles
-        # Par défaut, utiliser shared/models/enrichment (structure vocalyx-all)
-        models_dir = getattr(config, 'llm_models_dir', './shared/models/enrichment')
+        # Par défaut, utiliser /app/shared/models/enrichment (Docker) comme transcription
+        models_dir = getattr(config, 'llm_models_dir', '/app/shared/models/enrichment')
         self.model_manager = ModelManager(models_dir=models_dir)
         
         logger.info(
@@ -102,7 +102,8 @@ class EnrichmentService:
                             f"❌ Failed to download model {self.model_name}: {download_error}\n"
                             f"   Please ensure the model file exists in:\n"
                             f"   - {self.model_manager.models_dir}\n"
-                            f"   - ./shared/models/enrichment/\n"
+                            f"   - /app/shared/models/enrichment/ (Docker)\n"
+                            f"   - ./shared/models/enrichment/ (local)\n"
                             f"   Or provide the full path to the .gguf file."
                         )
                         raise

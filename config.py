@@ -29,10 +29,11 @@ class Config:
         self.internal_api_key = os.getenv('INTERNAL_API_KEY', '')
         
         # LLM
-        # Par défaut, chercher dans shared/models/enrichment (structure vocalyx-all)
+        # Par défaut, chercher dans /app/shared/models/enrichment (Docker) ou ./shared/models/enrichment (local)
         default_model = os.getenv('LLM_MODEL', 'phi-3-mini')
         self.llm_model = default_model
-        self.llm_models_dir = os.getenv('LLM_MODELS_DIR', './shared/models/enrichment')
+        # Utiliser /app/shared/models/enrichment comme dans transcription (Docker)
+        self.llm_models_dir = os.getenv('LLM_MODELS_DIR', '/app/shared/models/enrichment')
         self.llm_device = os.getenv('LLM_DEVICE', 'cpu')
         self.llm_compute_type = os.getenv('LLM_COMPUTE_TYPE', 'int8')
         self.llm_max_tokens = int(os.getenv('LLM_MAX_TOKENS', '256'))
