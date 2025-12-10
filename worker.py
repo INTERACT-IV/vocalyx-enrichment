@@ -1050,7 +1050,7 @@ def aggregate_enrichment_chunks_task(self, transcription_id: str):
         # 4. Bullet points
         try:
             start = time.time()
-            # Desactivation pour test
+            # Desactivation pour le moment
             #response = enrichment_service.generate_metadata(enriched_text, "bullet_points", final_prompts, max_tokens=200)
             response = None
             bullet_points_time = round(time.time() - start, 2)
@@ -1085,7 +1085,7 @@ def aggregate_enrichment_chunks_task(self, transcription_id: str):
             "title": metadata_result.get('title'),
             "summary": metadata_result.get('summary'),
             "satisfaction_score": satisfaction_score,
-            "bullet_points": bullet_points_list[:4] if bullet_points_list else [],
+            "bullet_points": [],#bullet_points_list[:4] if bullet_points_list else [],
             "timing": {
                 "title_time": title_time,
                 "summary_time": summary_time,
