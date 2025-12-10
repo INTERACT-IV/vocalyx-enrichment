@@ -441,7 +441,7 @@ class EnrichmentService:
         
         logger.info("Generating bullet points...")
         bullet_points_start = time.time()
-        bullet_points = self.generate_bullet_points(transcription_text, bullet_points_prompt)
+        bullet_points = ""#self.generate_bullet_points(transcription_text, bullet_points_prompt)
         bullet_points_time = round(time.time() - bullet_points_start, 2)
         
         total_enrichment_time = round(time.time() - enrichment_start_time, 2)
