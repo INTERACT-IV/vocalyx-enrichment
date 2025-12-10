@@ -17,10 +17,10 @@ logger = logging.getLogger("vocalyx.enrichment")
 # Prompts par défaut pour l'enrichissement
 # Contexte: Les transcriptions proviennent toujours d'un call center/support client (appelant vers agent)
 DEFAULT_ENRICHMENT_PROMPTS = {
-    "title": "Cette transcription provient d'un appel entre un client (appelant) et un agent de support client. Génère un titre court et accrocheur (maximum 10 mots) pour cette transcription d'appel client.",
-    "summary": "Cette transcription provient d'un appel entre un client (appelant) et un agent de support client. Génère un résumé concis (maximum 50 mots) pour cette transcription d'appel client.",
-    "satisfaction": "Cette transcription provient d'un appel entre un client (appelant) et un agent de support client. Analyse cette transcription d'appel client et attribue un score de satisfaction client de 1 à 10 (pas besoin de justification). Format JSON: {\"score\": nombre}",
-    "bullet_points": "Cette transcription provient d'un appel entre un client (appelant) et un agent de support client. Extrais les points clés de cette transcription d'appel client sous forme de puces. Format JSON: {\"points\": [\"point 1\", \"point 2\", ...]}"
+    "title": "Cette transcription provient d'un appel entre un client (appelant) et un agent de support client. Génère un titre court et accrocheur (maximum 10 mots) pour cette transcription d'appel client. IMPORTANT: Réponds UNIQUEMENT en français.",
+    "summary": "Cette transcription provient d'un appel entre un client (appelant) et un agent de support client. Génère un résumé concis (maximum 50 mots) pour cette transcription d'appel client. IMPORTANT: Réponds UNIQUEMENT en français.",
+    "satisfaction": "Cette transcription provient d'un appel entre un client (appelant) et un agent de support client. Analyse cette transcription d'appel client et attribue un score de satisfaction client de 1 à 10 (pas besoin de justification). Format JSON: {\"score\": nombre}. IMPORTANT: Réponds UNIQUEMENT en français.",
+    "bullet_points": "Cette transcription provient d'un appel entre un client (appelant) et un agent de support client. Extrais les points clés de cette transcription d'appel client sous forme de puces. Format JSON: {\"points\": [\"point 1\", \"point 2\", ...]}. IMPORTANT: Réponds UNIQUEMENT en français."
 }
 
 
@@ -212,7 +212,7 @@ class EnrichmentService:
         if not transcription_text or not transcription_text.strip():
             return ""
         
-        prompt = custom_prompt or "Cette transcription provient d'un appel entre un client (appelant) et un agent de support client. Génère un titre court et accrocheur (maximum 10 mots) pour cette transcription d'appel client:"
+        prompt = custom_prompt or "Cette transcription provient d'un appel entre un client (appelant) et un agent de support client. Génère un titre court et accrocheur (maximum 10 mots) pour cette transcription d'appel client. IMPORTANT: Réponds UNIQUEMENT en français:"
         # Limiter le texte à 500 caractères pour éviter les prompts trop longs
         text_sample = transcription_text[:500] if len(transcription_text) > 500 else transcription_text
         full_prompt = f"{prompt}\n\n{text_sample}"
@@ -267,7 +267,7 @@ class EnrichmentService:
         if not transcription_text or not transcription_text.strip():
             return ""
         
-        prompt = custom_prompt or "Cette transcription provient d'un appel entre un client (appelant) et un agent de support client. Génère un résumé concis (maximum 50 mots) pour cette transcription d'appel client:"
+        prompt = custom_prompt or "Cette transcription provient d'un appel entre un client (appelant) et un agent de support client. Génère un résumé concis (maximum 50 mots) pour cette transcription d'appel client. IMPORTANT: Réponds UNIQUEMENT en français:"
         full_prompt = f"{prompt}\n\n{transcription_text}"
         
         try:
@@ -296,7 +296,7 @@ class EnrichmentService:
         if not transcription_text or not transcription_text.strip():
             return {"score": 5}
         
-        prompt = custom_prompt or "Cette transcription provient d'un appel entre un client (appelant) et un agent de support client. Analyse cette transcription d'appel client et attribue un score de satisfaction client de 1 à 10 (pas besoin de justification). Format JSON: {\"score\": nombre}"
+        prompt = custom_prompt or "Cette transcription provient d'un appel entre un client (appelant) et un agent de support client. Analyse cette transcription d'appel client et attribue un score de satisfaction client de 1 à 10 (pas besoin de justification). Format JSON: {\"score\": nombre}. IMPORTANT: Réponds UNIQUEMENT en français."
         full_prompt = f"{prompt}\n\n{transcription_text}"
         
         try:
@@ -362,7 +362,7 @@ class EnrichmentService:
         if not transcription_text or not transcription_text.strip():
             return []
         
-        prompt = custom_prompt or "Cette transcription provient d'un appel entre un client (appelant) et un agent de support client. Extrais les points clés de cette transcription d'appel client sous forme de puces. Format JSON: {\"points\": [\"point 1\", \"point 2\", ...]}"
+        prompt = custom_prompt or "Cette transcription provient d'un appel entre un client (appelant) et un agent de support client. Extrais les points clés de cette transcription d'appel client sous forme de puces. Format JSON: {\"points\": [\"point 1\", \"point 2\", ...]}. IMPORTANT: Réponds UNIQUEMENT en français."
         full_prompt = f"{prompt}\n\n{transcription_text}"
         
         try:
