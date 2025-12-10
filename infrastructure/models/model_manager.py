@@ -301,7 +301,7 @@ class ModelManager:
     
     def check_model_health(self, model_path: Path) -> bool:
         """
-        Vérifie la santé d'un modèle (existence, taille, etc.).
+        Vérifie la santé d'un modèle (existence, taille, format GGUF, etc.).
         
         Args:
             model_path: Chemin vers le modèle
@@ -319,9 +319,25 @@ class ModelManager:
         
         # Vérifier la taille (doit être > 100 MB pour un modèle GGUF)
         size_mb = model_path.stat().st_size / (1024 * 1024)
+        size_gb = model_path.stat().st_size / (1024 * 1024 * 1024)
         if size_mb < 100:
             logger.warning(f"⚠️ Model file seems too small ({size_mb:.1f} MB): {model_path}")
             return False
         
-        logger.info(f"✅ Model health check passed: {model_path} ({size_mb:.1f} MB)")
+        # Vérifier le format GGUF (magic bytes)
+        try:
+            with open(model_path, 'rb') as f:
+                header = f.read(4)
+                if header != b'GGUF':
+                    logger.error(
+                        f"❌ Model file is not a valid GGUF format (magic bytes: {header.hex()}): {model_path}\n"
+                        f"   Expected: 'GGUF' (0x47475546)\n"
+                        f"   Got: {header} (0x{header.hex()})"
+                    )
+                    return False
+        except Exception as e:
+            logger.error(f"❌ Cannot read model file to verify format: {e}")
+            return False
+        
+        logger.info(f"✅ Model health check passed: {model_path} ({size_gb:.2f} GB, valid GGUF format)")
         return True

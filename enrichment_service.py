@@ -84,6 +84,24 @@ class EnrichmentService:
             
             if not model_path.exists():
                 logger.warning(f"⚠️ Model not found at: {model_path}")
+                
+                # Lister les emplacements possibles pour aider au diagnostic
+                possible_locations = [
+                    "/app/shared/models/enrichment",
+                    "/app/models/enrichment",
+                    str(self.models_dir),
+                ]
+                logger.info(f"🔍 Searching for model '{self.model_name}' in possible locations:")
+                for loc in possible_locations:
+                    loc_path = Path(loc)
+                    if loc_path.exists():
+                        files = list(loc_path.glob("*.gguf"))
+                        logger.info(f"   {loc}: {len(files)} GGUF file(s) found")
+                        if files:
+                            logger.info(f"      Files: {[f.name for f in files[:5]]}")
+                    else:
+                        logger.info(f"   {loc}: directory does not exist")
+                
                 # Essayer de télécharger si c'est un modèle recommandé
                 if self.model_name in self.model_manager.RECOMMENDED_MODELS:
                     logger.info(f"📥 Attempting to download model {self.model_name}...")
@@ -91,36 +109,81 @@ class EnrichmentService:
                         model_path = self.model_manager.download_model(self.model_name)
                     except Exception as download_error:
                         logger.error(f"❌ Failed to download model: {download_error}")
-                        raise FileNotFoundError(f"Model file not found: {model_path}")
+                        raise FileNotFoundError(
+                            f"Model file not found: {model_path}\n"
+                            f"Expected locations: {', '.join(possible_locations)}\n"
+                            f"Model name: {self.model_name}"
+                        )
                 else:
-                    raise FileNotFoundError(f"Model file not found: {model_path}")
+                    raise FileNotFoundError(
+                        f"Model file not found: {model_path}\n"
+                        f"Expected locations: {', '.join(possible_locations)}\n"
+                        f"Model name: {self.model_name}"
+                    )
             
-            # Vérifier la santé du modèle
+            # Vérifier la santé du modèle (existence, taille, etc.)
             if not self.model_manager.check_model_health(model_path):
+                # Obtenir plus de détails sur le fichier
+                if model_path.exists():
+                    size_mb = model_path.stat().st_size / (1024 * 1024)
+                    logger.error(
+                        f"❌ Model health check failed: {model_path}\n"
+                        f"   File exists: True\n"
+                        f"   File size: {size_mb:.1f} MB\n"
+                        f"   Expected size: ~{self.model_manager.RECOMMENDED_MODELS.get(self.model_name, {}).get('size_gb', '?')} GB"
+                    )
                 raise ValueError(f"Model health check failed: {model_path}")
             
             self.model_path = model_path
             model_path_str = str(model_path.absolute())
             
+            # Vérifier que le fichier est lisible
+            try:
+                with open(model_path, 'rb') as f:
+                    # Lire les premiers bytes pour vérifier le format GGUF
+                    header = f.read(4)
+                    if header != b'GGUF':
+                        logger.warning(f"⚠️ File does not start with GGUF magic bytes: {header}")
+            except Exception as e:
+                logger.error(f"❌ Cannot read model file: {e}")
+                raise ValueError(f"Cannot read model file: {model_path}")
+            
             logger.info(
                 f"📦 Loading GGUF model | "
                 f"Path: {model_path_str} | "
+                f"Size: {model_path.stat().st_size / (1024**3):.2f} GB | "
                 f"Threads: {self.n_threads} | "
                 f"Context: {self.n_ctx} | "
                 f"Batch: {self.n_batch}"
             )
             
             # Charger le modèle GGUF avec llama-cpp-python
-            self.llm = Llama(
-                model_path=model_path_str,
-                n_ctx=self.n_ctx,
-                n_threads=self.n_threads,
-                n_batch=self.n_batch,
-                n_gpu_layers=0,  # CPU only
-                verbose=False,
-                use_mmap=True,
-                use_mlock=False
-            )
+            try:
+                self.llm = Llama(
+                    model_path=model_path_str,
+                    n_ctx=self.n_ctx,
+                    n_threads=self.n_threads,
+                    n_batch=self.n_batch,
+                    n_gpu_layers=0,  # CPU only
+                    verbose=False,
+                    use_mmap=True,
+                    use_mlock=False
+                )
+            except ValueError as e:
+                # Améliorer le message d'erreur pour les problèmes de chargement
+                logger.error(
+                    f"❌ Failed to load GGUF model with llama-cpp-python:\n"
+                    f"   Path: {model_path_str}\n"
+                    f"   File exists: {model_path.exists()}\n"
+                    f"   File size: {model_path.stat().st_size / (1024**3):.2f} GB\n"
+                    f"   Error: {e}\n"
+                    f"   Possible causes:\n"
+                    f"   - File is corrupted or incomplete\n"
+                    f"   - File is not a valid GGUF format\n"
+                    f"   - llama-cpp-python version incompatible\n"
+                    f"   - Insufficient memory"
+                )
+                raise
             
             logger.info(f"✅ Model {self.model_name} loaded successfully")
         except Exception as e:
