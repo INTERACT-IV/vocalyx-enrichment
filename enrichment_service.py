@@ -322,8 +322,8 @@ class EnrichmentService:
                                 break
                     
                     if end > start:
-                        json_str = response[start:end]
-                        data = json.loads(json_str)
+                    json_str = response[start:end]
+                    data = json.loads(json_str)
                         score = int(data.get("score", 5))
                         justification = data.get("justification", "")
                         
@@ -338,7 +338,7 @@ class EnrichmentService:
                                 elif isinstance(nested_json, dict) and "score" in nested_json:
                                     # Si c'est un objet avec score, prendre juste le texte
                                     justification = str(nested_json.get("justification", ""))
-                            except:
+            except:
                                 # Si le parsing échoue, garder la justification originale
                                 pass
                         
@@ -486,7 +486,7 @@ class EnrichmentService:
         
         logger.info(f"✅ Enrichment completed in {total_enrichment_time}s (title: {title_time}s, summary: {summary_time}s, score: {satisfaction_time}s, bullets: {bullet_points_time}s)")
         return enrichment_data
-    
+
     def enrich_segments(self, segments: List[Dict], context: Optional[List[Dict]] = None, custom_prompts: Optional[Dict] = None) -> List[Dict]:
         """
         Enrichit une liste de segments de transcription (correction du texte).

@@ -22,7 +22,7 @@ class Config:
         
         self.config.read(config_file)
         self._load_settings()
-    
+        
     def _create_default_config(self):
         """Crée un fichier de configuration par défaut"""
         config = configparser.ConfigParser()

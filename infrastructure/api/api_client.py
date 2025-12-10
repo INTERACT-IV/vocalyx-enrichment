@@ -30,7 +30,7 @@ class VocalyxAPIClient:
         
         # Vérifier la connexion à l'API au démarrage (non bloquant)
         try:
-            self._verify_connection()
+        self._verify_connection()
         except Exception as e:
             logger.warning(f"⚠️ Could not verify API connection at startup: {e}")
     
@@ -88,7 +88,7 @@ class VocalyxAPIClient:
                 except:
                     logger.error(f"HTTP 422 error getting transcription {transcription_id}: {e.response.text}")
             else:
-                logger.error(f"HTTP error getting transcription: {e}")
+            logger.error(f"HTTP error getting transcription: {e}")
             raise
         except httpx.HTTPError as e:
             logger.error(f"Error getting transcription: {e}")
