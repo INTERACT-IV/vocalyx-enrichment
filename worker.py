@@ -14,7 +14,7 @@ from pathlib import Path
 from datetime import datetime
 from celery.signals import worker_init
 from celery.worker.control import Panel
-from celery import Celery
+from celery import Celery, group
 
 from config import Config
 from infrastructure.api.api_client import VocalyxAPIClient
@@ -373,7 +373,7 @@ def enrich_transcription_task(self, transcription_id: str, use_distributed: bool
             metadata = {}
             processing_time = round(time.time() - start_time, 2)
         else:
-            logger.info(f"[{transcription_id}] 📊 Generating metadata (title, summary, satisfaction, bullet_points) - ENRICHISSEMENT DE BASE...")
+            logger.info(f"[{transcription_id}] 📊 Generating metadata (title, summary, satisfaction, bullet_points) - ENRICHISSEMENT DE BASE (PARALLEL)...")
             metadata_start_time = time.time()
             # Obtenir les prompts finaux
             from enrichment_service import DEFAULT_ENRICHMENT_PROMPTS
@@ -381,91 +381,50 @@ def enrich_transcription_task(self, transcription_id: str, use_distributed: bool
             if enrichment_prompts:
                 final_prompts.update(enrichment_prompts)
             
+            # Obtenir le modèle LLM
+            llm_model = transcription.get('llm_model', config.llm_model)
+            
+            # Créer un groupe de tâches pour générer les 4 métadonnées en parallèle
+            from celery import current_app as celery_current_app
+            metadata_tasks = group(
+                generate_title_metadata_task.s(transcription_id, text_for_metadata, final_prompts, llm_model),
+                generate_summary_metadata_task.s(transcription_id, text_for_metadata, final_prompts, llm_model),
+                generate_satisfaction_metadata_task.s(transcription_id, text_for_metadata, final_prompts, llm_model),
+                generate_bullet_points_metadata_task.s(transcription_id, text_for_metadata, final_prompts, llm_model)
+            )
+            
+            logger.info(f"[{transcription_id}] 🚀 Launching 4 parallel metadata generation tasks (title, summary, satisfaction, bullet_points)...")
+            result_group = metadata_tasks.apply_async()
+            
+            # Attendre que toutes les tâches soient terminées
+            results = result_group.get()
+            
+            # Extraire les résultats
             metadata = {}
-            
-            # Générer le titre avec mesure du temps
             title_time = 0.0
-            try:
-                logger.info(f"[{transcription_id}] 📊 Generating title...")
-                title_start = time.time()
-                title_response = enrichment_service.generate_metadata(text_for_metadata, "title", final_prompts, max_tokens=50)
-                title_time = round(time.time() - title_start, 2)
-                metadata['title'] = title_response.strip() if title_response else None
-                if metadata['title']:
-                    logger.info(f"[{transcription_id}] ✅ Title generated: {metadata['title'][:50]}...")
-                else:
-                    logger.warning(f"[{transcription_id}] ⚠️ Title generation returned empty string")
-            except Exception as e:
-                logger.warning(f"[{transcription_id}] ⚠️ Failed to generate title: {e}", exc_info=True)
-                metadata['title'] = None
-            
-            # Générer le résumé avec mesure du temps
             summary_time = 0.0
-            try:
-                logger.info(f"[{transcription_id}] 📊 Generating summary...")
-                summary_start = time.time()
-                summary_response = enrichment_service.generate_metadata(text_for_metadata, "summary", final_prompts, max_tokens=150)
-                summary_time = round(time.time() - summary_start, 2)
-                metadata['summary'] = summary_response.strip() if summary_response else None
-                if metadata['summary']:
-                    logger.info(f"[{transcription_id}] ✅ Summary generated: {metadata['summary'][:100]}...")
-                else:
-                    logger.warning(f"[{transcription_id}] ⚠️ Summary generation returned empty string")
-            except Exception as e:
-                logger.warning(f"[{transcription_id}] ⚠️ Failed to generate summary: {e}", exc_info=True)
-                metadata['summary'] = None
-            
-            # Générer le score de satisfaction avec mesure du temps
             satisfaction_time = 0.0
-            try:
-                logger.info(f"[{transcription_id}] 📊 Generating satisfaction score...")
-                satisfaction_start = time.time()
-                satisfaction_response = enrichment_service.generate_metadata(text_for_metadata, "satisfaction", final_prompts, max_tokens=100)
-                satisfaction_time = round(time.time() - satisfaction_start, 2)
-                # Parser le JSON
-                import json as json_lib
-                if satisfaction_response and satisfaction_response.strip():
-                    try:
-                        metadata['satisfaction'] = json_lib.loads(satisfaction_response.strip())
-                    except Exception as json_error:
-                        logger.warning(f"[{transcription_id}] ⚠️ Failed to parse satisfaction JSON: {json_error}, using fallback")
-                        metadata['satisfaction'] = {"score": None, "justification": satisfaction_response.strip()}
-                else:
-                    logger.warning(f"[{transcription_id}] ⚠️ Satisfaction generation returned empty string")
-                    metadata['satisfaction'] = None
-                if metadata['satisfaction']:
-                    logger.info(f"[{transcription_id}] ✅ Satisfaction score generated: {metadata['satisfaction']}")
-            except Exception as e:
-                logger.warning(f"[{transcription_id}] ⚠️ Failed to generate satisfaction score: {e}", exc_info=True)
-                metadata['satisfaction'] = None
-            
-            # Générer les bullet points avec mesure du temps
             bullet_points_time = 0.0
-            try:
-                logger.info(f"[{transcription_id}] 📊 Generating bullet points...")
-                bullet_start = time.time()
-                bullet_response = enrichment_service.generate_metadata(text_for_metadata, "bullet_points", final_prompts, max_tokens=200)
-                bullet_points_time = round(time.time() - bullet_start, 2)
-                # Parser le JSON
-                import json as json_lib
-                if bullet_response and bullet_response.strip():
-                    try:
-                        metadata['bullet_points'] = json_lib.loads(bullet_response.strip())
-                    except Exception as json_error:
-                        logger.warning(f"[{transcription_id}] ⚠️ Failed to parse bullet points JSON: {json_error}, using fallback")
-                        metadata['bullet_points'] = {"points": [bullet_response.strip()]}
-                else:
-                    logger.warning(f"[{transcription_id}] ⚠️ Bullet points generation returned empty string")
-                    metadata['bullet_points'] = None
-                if metadata['bullet_points']:
-                    logger.info(f"[{transcription_id}] ✅ Bullet points generated: {len(metadata['bullet_points'].get('points', []))} points")
-            except Exception as e:
-                logger.warning(f"[{transcription_id}] ⚠️ Failed to generate bullet points: {e}", exc_info=True)
-                metadata['bullet_points'] = None
+            
+            for result in results:
+                task_type = result.get('task_type')
+                if task_type == 'title':
+                    metadata['title'] = result.get('result')
+                    title_time = result.get('processing_time', 0.0)
+                elif task_type == 'summary':
+                    metadata['summary'] = result.get('result')
+                    summary_time = result.get('processing_time', 0.0)
+                elif task_type == 'satisfaction':
+                    metadata['satisfaction'] = result.get('result')
+                    satisfaction_time = result.get('processing_time', 0.0)
+                elif task_type == 'bullet_points':
+                    metadata['bullet_points'] = result.get('result')
+                    bullet_points_time = result.get('processing_time', 0.0)
             
             metadata_time = round(time.time() - metadata_start_time, 2)
+            max_parallel_time = max(title_time, summary_time, satisfaction_time, bullet_points_time)
             processing_time = round(time.time() - start_time, 2)
-            logger.info(f"[{transcription_id}] ✅ Metadata generation completed in {metadata_time}s")
+            logger.info(f"[{transcription_id}] ✅ Parallel metadata generation completed | Total time: {metadata_time}s | Max parallel time: {max_parallel_time}s | Speedup: {sum([title_time, summary_time, satisfaction_time, bullet_points_time]) / max_parallel_time:.2f}x")
         
         # Construire l'objet enhanced_data avec les métadonnées (enrichissement de base)
         # Toujours sauvegarder, même si toutes les métadonnées sont None (pour diagnostic)
@@ -868,6 +827,204 @@ def enrich_chunk_task(self, transcription_id: str, chunk_index: int, total_chunk
 
 @celery_app.task(
     bind=True,
+    name='generate_title_metadata',
+    max_retries=1,
+    default_retry_delay=10,
+    acks_late=True
+)
+def generate_title_metadata_task(self, transcription_id: str, text: str, prompts: dict, llm_model: str):
+    """
+    Génère le titre pour une transcription (tâche parallèle).
+    
+    Args:
+        transcription_id: ID de la transcription
+        text: Texte à analyser
+        prompts: Prompts finaux (défaut + personnalisés)
+        llm_model: Nom du modèle LLM à utiliser
+    """
+    start_time = time.time()
+    try:
+        enrichment_service = get_llm_service(model_name=llm_model)
+        title_response = enrichment_service.generate_metadata(text, "title", prompts, max_tokens=50)
+        title = title_response.strip() if title_response else None
+        processing_time = round(time.time() - start_time, 2)
+        
+        if title:
+            logger.info(f"[{transcription_id}] ✅ Title generated (parallel): {title[:50]}... ({processing_time}s)")
+        else:
+            logger.warning(f"[{transcription_id}] ⚠️ Title generation returned empty string")
+        
+        return {
+            "task_type": "title",
+            "result": title,
+            "processing_time": processing_time,
+            "success": title is not None
+        }
+    except Exception as e:
+        logger.warning(f"[{transcription_id}] ⚠️ Failed to generate title (parallel): {e}", exc_info=True)
+        return {
+            "task_type": "title",
+            "result": None,
+            "processing_time": round(time.time() - start_time, 2),
+            "success": False,
+            "error": str(e)
+        }
+
+
+@celery_app.task(
+    bind=True,
+    name='generate_summary_metadata',
+    max_retries=1,
+    default_retry_delay=10,
+    acks_late=True
+)
+def generate_summary_metadata_task(self, transcription_id: str, text: str, prompts: dict, llm_model: str):
+    """
+    Génère le résumé pour une transcription (tâche parallèle).
+    
+    Args:
+        transcription_id: ID de la transcription
+        text: Texte à analyser
+        prompts: Prompts finaux (défaut + personnalisés)
+        llm_model: Nom du modèle LLM à utiliser
+    """
+    start_time = time.time()
+    try:
+        enrichment_service = get_llm_service(model_name=llm_model)
+        summary_response = enrichment_service.generate_metadata(text, "summary", prompts, max_tokens=150)
+        summary = summary_response.strip() if summary_response else None
+        processing_time = round(time.time() - start_time, 2)
+        
+        if summary:
+            logger.info(f"[{transcription_id}] ✅ Summary generated (parallel): {summary[:100]}... ({processing_time}s)")
+        else:
+            logger.warning(f"[{transcription_id}] ⚠️ Summary generation returned empty string")
+        
+        return {
+            "task_type": "summary",
+            "result": summary,
+            "processing_time": processing_time,
+            "success": summary is not None
+        }
+    except Exception as e:
+        logger.warning(f"[{transcription_id}] ⚠️ Failed to generate summary (parallel): {e}", exc_info=True)
+        return {
+            "task_type": "summary",
+            "result": None,
+            "processing_time": round(time.time() - start_time, 2),
+            "success": False,
+            "error": str(e)
+        }
+
+
+@celery_app.task(
+    bind=True,
+    name='generate_satisfaction_metadata',
+    max_retries=1,
+    default_retry_delay=10,
+    acks_late=True
+)
+def generate_satisfaction_metadata_task(self, transcription_id: str, text: str, prompts: dict, llm_model: str):
+    """
+    Génère le score de satisfaction pour une transcription (tâche parallèle).
+    
+    Args:
+        transcription_id: ID de la transcription
+        text: Texte à analyser
+        prompts: Prompts finaux (défaut + personnalisés)
+        llm_model: Nom du modèle LLM à utiliser
+    """
+    start_time = time.time()
+    try:
+        enrichment_service = get_llm_service(model_name=llm_model)
+        satisfaction_response = enrichment_service.generate_metadata(text, "satisfaction", prompts, max_tokens=100)
+        processing_time = round(time.time() - start_time, 2)
+        
+        satisfaction = None
+        if satisfaction_response and satisfaction_response.strip():
+            try:
+                satisfaction = json.loads(satisfaction_response.strip())
+            except Exception as json_error:
+                logger.warning(f"[{transcription_id}] ⚠️ Failed to parse satisfaction JSON (parallel): {json_error}, using fallback")
+                satisfaction = {"score": None, "justification": satisfaction_response.strip()}
+        else:
+            logger.warning(f"[{transcription_id}] ⚠️ Satisfaction generation returned empty string")
+        
+        if satisfaction:
+            logger.info(f"[{transcription_id}] ✅ Satisfaction score generated (parallel): {satisfaction} ({processing_time}s)")
+        
+        return {
+            "task_type": "satisfaction",
+            "result": satisfaction,
+            "processing_time": processing_time,
+            "success": satisfaction is not None
+        }
+    except Exception as e:
+        logger.warning(f"[{transcription_id}] ⚠️ Failed to generate satisfaction (parallel): {e}", exc_info=True)
+        return {
+            "task_type": "satisfaction",
+            "result": None,
+            "processing_time": round(time.time() - start_time, 2),
+            "success": False,
+            "error": str(e)
+        }
+
+
+@celery_app.task(
+    bind=True,
+    name='generate_bullet_points_metadata',
+    max_retries=1,
+    default_retry_delay=10,
+    acks_late=True
+)
+def generate_bullet_points_metadata_task(self, transcription_id: str, text: str, prompts: dict, llm_model: str):
+    """
+    Génère les bullet points pour une transcription (tâche parallèle).
+    
+    Args:
+        transcription_id: ID de la transcription
+        text: Texte à analyser
+        prompts: Prompts finaux (défaut + personnalisés)
+        llm_model: Nom du modèle LLM à utiliser
+    """
+    start_time = time.time()
+    try:
+        enrichment_service = get_llm_service(model_name=llm_model)
+        bullet_response = enrichment_service.generate_metadata(text, "bullet_points", prompts, max_tokens=200)
+        processing_time = round(time.time() - start_time, 2)
+        
+        bullet_points = None
+        if bullet_response and bullet_response.strip():
+            try:
+                bullet_points = json.loads(bullet_response.strip())
+            except Exception as json_error:
+                logger.warning(f"[{transcription_id}] ⚠️ Failed to parse bullet points JSON (parallel): {json_error}, using fallback")
+                bullet_points = {"points": [bullet_response.strip()]}
+        else:
+            logger.warning(f"[{transcription_id}] ⚠️ Bullet points generation returned empty string")
+        
+        if bullet_points:
+            logger.info(f"[{transcription_id}] ✅ Bullet points generated (parallel): {len(bullet_points.get('points', []))} points ({processing_time}s)")
+        
+        return {
+            "task_type": "bullet_points",
+            "result": bullet_points,
+            "processing_time": processing_time,
+            "success": bullet_points is not None
+        }
+    except Exception as e:
+        logger.warning(f"[{transcription_id}] ⚠️ Failed to generate bullet points (parallel): {e}", exc_info=True)
+        return {
+            "task_type": "bullet_points",
+            "result": None,
+            "processing_time": round(time.time() - start_time, 2),
+            "success": False,
+            "error": str(e)
+        }
+
+
+@celery_app.task(
+    bind=True,
     name='aggregate_enrichment_chunks',
     max_retries=2,
     default_retry_delay=30,
@@ -950,7 +1107,8 @@ def aggregate_enrichment_chunks_task(self, transcription_id: str):
         
         # Générer les métadonnées (titre, résumé, score, bullet points) - C'EST L'ENRICHISSEMENT DE BASE
         # Les métadonnées sont TOUJOURS générées si enrichment_requested=true
-        logger.info(f"[{transcription_id}] 📊 Generating metadata (title, summary, satisfaction, bullet_points) - ENRICHISSEMENT DE BASE...")
+        # OPTIMISATION: Génération en parallèle sur 4 workers différents
+        logger.info(f"[{transcription_id}] 📊 Generating metadata (title, summary, satisfaction, bullet_points) - ENRICHISSEMENT DE BASE (PARALLEL)...")
         metadata_start_time = time.time()
         # Obtenir les prompts finaux depuis les métadonnées
         from enrichment_service import DEFAULT_ENRICHMENT_PROMPTS
@@ -961,90 +1119,47 @@ def aggregate_enrichment_chunks_task(self, transcription_id: str):
         
         # Obtenir le modèle LLM
         llm_model = metadata.get('llm_model', config.llm_model)
-        enrichment_service = get_llm_service(model_name=llm_model)
         
+        # Créer un groupe de tâches pour générer les 4 métadonnées en parallèle
+        from celery import current_app as celery_current_app
+        metadata_tasks = group(
+            generate_title_metadata_task.s(transcription_id, enriched_text, final_prompts, llm_model),
+            generate_summary_metadata_task.s(transcription_id, enriched_text, final_prompts, llm_model),
+            generate_satisfaction_metadata_task.s(transcription_id, enriched_text, final_prompts, llm_model),
+            generate_bullet_points_metadata_task.s(transcription_id, enriched_text, final_prompts, llm_model)
+        )
+        
+        logger.info(f"[{transcription_id}] 🚀 Launching 4 parallel metadata generation tasks (title, summary, satisfaction, bullet_points)...")
+        result_group = metadata_tasks.apply_async()
+        
+        # Attendre que toutes les tâches soient terminées
+        results = result_group.get()
+        
+        # Extraire les résultats
         metadata_result = {}
-        
-        # Générer le titre avec mesure du temps
         title_time = 0.0
-        try:
-            logger.info(f"[{transcription_id}] 📊 Generating title...")
-            title_start = time.time()
-            title_response = enrichment_service.generate_metadata(enriched_text, "title", final_prompts, max_tokens=50)
-            title_time = round(time.time() - title_start, 2)
-            metadata_result['title'] = title_response.strip() if title_response else None
-            if metadata_result['title']:
-                logger.info(f"[{transcription_id}] ✅ Title generated: {metadata_result['title'][:50]}...")
-            else:
-                logger.warning(f"[{transcription_id}] ⚠️ Title generation returned empty string")
-        except Exception as e:
-            logger.warning(f"[{transcription_id}] ⚠️ Failed to generate title: {e}", exc_info=True)
-            metadata_result['title'] = None
-        
-        # Générer le résumé avec mesure du temps
         summary_time = 0.0
-        try:
-            logger.info(f"[{transcription_id}] 📊 Generating summary...")
-            summary_start = time.time()
-            summary_response = enrichment_service.generate_metadata(enriched_text, "summary", final_prompts, max_tokens=150)
-            summary_time = round(time.time() - summary_start, 2)
-            metadata_result['summary'] = summary_response.strip() if summary_response else None
-            if metadata_result['summary']:
-                logger.info(f"[{transcription_id}] ✅ Summary generated: {metadata_result['summary'][:100]}...")
-            else:
-                logger.warning(f"[{transcription_id}] ⚠️ Summary generation returned empty string")
-        except Exception as e:
-            logger.warning(f"[{transcription_id}] ⚠️ Failed to generate summary: {e}", exc_info=True)
-            metadata_result['summary'] = None
-        
-        # Générer le score de satisfaction avec mesure du temps
         satisfaction_time = 0.0
-        try:
-            logger.info(f"[{transcription_id}] 📊 Generating satisfaction score...")
-            satisfaction_start = time.time()
-            satisfaction_response = enrichment_service.generate_metadata(enriched_text, "satisfaction", final_prompts, max_tokens=100)
-            satisfaction_time = round(time.time() - satisfaction_start, 2)
-            # Parser le JSON
-            if satisfaction_response and satisfaction_response.strip():
-                try:
-                    metadata_result['satisfaction'] = json.loads(satisfaction_response.strip())
-                except Exception as json_error:
-                    logger.warning(f"[{transcription_id}] ⚠️ Failed to parse satisfaction JSON: {json_error}, using fallback")
-                    metadata_result['satisfaction'] = {"score": None, "justification": satisfaction_response.strip()}
-            else:
-                logger.warning(f"[{transcription_id}] ⚠️ Satisfaction generation returned empty string")
-                metadata_result['satisfaction'] = None
-            if metadata_result['satisfaction']:
-                logger.info(f"[{transcription_id}] ✅ Satisfaction score generated: {metadata_result['satisfaction']}")
-        except Exception as e:
-            logger.warning(f"[{transcription_id}] ⚠️ Failed to generate satisfaction score: {e}", exc_info=True)
-            metadata_result['satisfaction'] = None
-        
-        # Générer les bullet points avec mesure du temps
         bullet_points_time = 0.0
-        try:
-            logger.info(f"[{transcription_id}] 📊 Generating bullet points...")
-            bullet_start = time.time()
-            bullet_response = enrichment_service.generate_metadata(enriched_text, "bullet_points", final_prompts, max_tokens=200)
-            bullet_points_time = round(time.time() - bullet_start, 2)
-            # Parser le JSON
-            if bullet_response and bullet_response.strip():
-                try:
-                    metadata_result['bullet_points'] = json.loads(bullet_response.strip())
-                except Exception as json_error:
-                    logger.warning(f"[{transcription_id}] ⚠️ Failed to parse bullet points JSON: {json_error}, using fallback")
-                    metadata_result['bullet_points'] = {"points": [bullet_response.strip()]}
-            else:
-                logger.warning(f"[{transcription_id}] ⚠️ Bullet points generation returned empty string")
-                metadata_result['bullet_points'] = None
-            if metadata_result['bullet_points']:
-                logger.info(f"[{transcription_id}] ✅ Bullet points generated: {len(metadata_result['bullet_points'].get('points', []))} points")
-        except Exception as e:
-            logger.warning(f"[{transcription_id}] ⚠️ Failed to generate bullet points: {e}", exc_info=True)
-            metadata_result['bullet_points'] = None
+        
+        for result in results:
+            task_type = result.get('task_type')
+            if task_type == 'title':
+                metadata_result['title'] = result.get('result')
+                title_time = result.get('processing_time', 0.0)
+            elif task_type == 'summary':
+                metadata_result['summary'] = result.get('result')
+                summary_time = result.get('processing_time', 0.0)
+            elif task_type == 'satisfaction':
+                metadata_result['satisfaction'] = result.get('result')
+                satisfaction_time = result.get('processing_time', 0.0)
+            elif task_type == 'bullet_points':
+                metadata_result['bullet_points'] = result.get('result')
+                bullet_points_time = result.get('processing_time', 0.0)
         
         metadata_time = round(time.time() - metadata_start_time, 2)
-        logger.info(f"[{transcription_id}] ✅ Metadata generation completed in {metadata_time}s")
+        max_parallel_time = max(title_time, summary_time, satisfaction_time, bullet_points_time)
+        logger.info(f"[{transcription_id}] ✅ Parallel metadata generation completed | Total time: {metadata_time}s | Max parallel time: {max_parallel_time}s | Speedup: {sum([title_time, summary_time, satisfaction_time, bullet_points_time]) / max_parallel_time:.2f}x")
         
         # Construire l'objet enhanced_data avec les métadonnées (enrichissement de base)
         # Toujours sauvegarder, même si toutes les métadonnées sont None (pour diagnostic)

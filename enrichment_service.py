@@ -156,7 +156,9 @@ class EnrichmentService:
             if 'phi-3' in model_lower or 'phi3' in model_lower:
                 formatted_prompt = f"<|system|>\n{prompt}<|end|>\n<|assistant|>\n"
             elif 'mistral' in model_lower:
-                formatted_prompt = f"<s>[INST] {prompt} [/INST]"
+                # Format Mistral : [INST] prompt [/INST]
+                # Note: llama-cpp-python ajoute automatiquement <s> au début, ne pas l'inclure
+                formatted_prompt = f"[INST] {prompt} [/INST]"
             else:
                 formatted_prompt = prompt
             
