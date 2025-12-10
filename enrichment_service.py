@@ -6,7 +6,6 @@ import logging
 import json
 import re
 import os
-import threading
 from typing import Dict, Optional, List
 from pathlib import Path
 from llama_cpp import Llama
@@ -164,15 +163,14 @@ class EnrichmentService:
             else:
                 formatted_prompt = prompt
             
-            # Générer la réponse (protégé par un verrou car llama-cpp-python n'est pas thread-safe)
-            with self._lock:
-                response = self.llm(
-                    formatted_prompt,
-                    max_tokens=max_tokens,
-                    temperature=temperature,
-                    stop=stop_tokens,
-                    echo=False
-                )
+            # Générer la réponse
+            response = self.llm(
+                formatted_prompt,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                stop=stop_tokens,
+                echo=False
+            )
             
             # Extraire le texte généré
             if isinstance(response, dict):
