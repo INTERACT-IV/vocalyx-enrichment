@@ -266,7 +266,7 @@ class EnrichmentService:
         if not transcription_text or not transcription_text.strip():
             return ""
         
-        prompt = custom_prompt or "Génère un résumé concis de moins de 100 mots pour cette transcription:"
+        prompt = custom_prompt or "Génère un résumé concis (maximum 50 mots) pour cette transcription:"
         full_prompt = f"{prompt}\n\n{transcription_text}"
         
         try:
@@ -283,7 +283,7 @@ class EnrichmentService:
     
     def generate_satisfaction_score(self, transcription_text: str, custom_prompt: Optional[str] = None) -> Dict:
         """
-        Génère un score de satisfaction de 1 à 10 avec justification.
+        Génère un score de satisfaction de 1 à 10.
         
         Args:
             transcription_text: Texte de la transcription
@@ -295,7 +295,7 @@ class EnrichmentService:
         if not transcription_text or not transcription_text.strip():
             return {"score": 5}
         
-        prompt = custom_prompt or "Analyse cette transcription et attribue un score de satisfaction client de 1 à 10. Format JSON: {\"score\": nombre}"
+        prompt = custom_prompt or "Analyse cette transcription et attribue un score de satisfaction client de 1 à 10 (pas besoin de justification). Format JSON: {\"score\": nombre}"
         full_prompt = f"{prompt}\n\n{transcription_text}"
         
         try:
@@ -325,33 +325,8 @@ class EnrichmentService:
                         json_str = response[start:end]
                         data = json.loads(json_str)
                         score = int(data.get("score", 5))
-                        justification = data.get("justification", "")
                         
-                        # Nettoyer la justification : si elle contient un JSON, le parser
-                        if justification and justification.strip().startswith('{'):
-                            try:
-                                # Essayer de parser le JSON dans la justification
-                                nested_json = json.loads(justification)
-                                # Si c'est un JSON valide, prendre la justification de ce JSON
-                                if isinstance(nested_json, dict) and "justification" in nested_json:
-                                    justification = nested_json.get("justification", justification)
-                                elif isinstance(nested_json, dict) and "score" in nested_json:
-                                    # Si c'est un objet avec score, prendre juste le texte
-                                    justification = str(nested_json.get("justification", ""))
-                            except:
-                                # Si le parsing échoue, garder la justification originale
-                                pass
-                        
-                        # Nettoyer la justification : supprimer les échappements JSON
-                        if justification:
-                            justification = justification.replace('\\"', '"').replace("\\'", "'")
-                            # Limiter la longueur
-                            justification = justification[:200].strip()
-                        
-                        return {
-                            "score": max(1, min(10, score)),  # S'assurer que le score est entre 1 et 10
-                            "justification": justification if justification else "Score généré automatiquement"
-                        }
+                        return { "score": max(1, min(10, score)) }
             except Exception as json_error:
                 logger.debug(f"Failed to parse JSON from satisfaction response: {json_error}, response: {response[:100]}")
             
