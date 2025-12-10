@@ -83,6 +83,11 @@ class ModelManager:
         Returns:
             Chemin Path vers le modèle
         """
+        # Normaliser le nom du modèle (mapper mistral-7b vers mistral-7b-instruct)
+        if model_name and 'mistral-7b' in model_name.lower() and 'instruct' not in model_name.lower():
+            model_name = 'mistral-7b-instruct'
+            logger.debug(f"🔄 Normalized model name to: {model_name}")
+        
         # Si c'est un chemin absolu vers un fichier existant
         model_path = Path(model_name)
         if model_path.is_absolute() and model_path.exists() and model_path.is_file():

@@ -112,20 +112,33 @@ class LLMModelCache:
         
         model_name = model_name.lower()
         
+        # Mapper les anciens noms vers les nouveaux noms
+        if 'mistral-7b' in model_name and 'instruct' not in model_name:
+            return 'mistral-7b-instruct'
+        
         # Si c'est un chemin, extraire le nom du modèle
         if model_name.startswith('./') or model_name.startswith('/'):
             parts = model_name.replace('\\', '/').split('/')
             # Chercher le nom du modèle dans le chemin
             for part in reversed(parts):
-                if any(m in part for m in ['phi-3', 'mistral', 'llama', 'gemma']):
+                if 'mistral-7b' in part and 'instruct' not in part:
+                    return 'mistral-7b-instruct'
+                elif any(m in part for m in ['phi-3', 'mistral', 'llama', 'gemma']):
+                    # Normaliser mistral-7b vers mistral-7b-instruct
+                    if 'mistral-7b' in part and 'instruct' not in part:
+                        return 'mistral-7b-instruct'
                     return part
             return parts[-1] if parts else 'phi-3-mini'
         
         # Noms de modèles connus
-        known_models = ['phi-3-mini', 'phi-3-medium', 'mistral-7b', 'llama-3-8b', 'gemma-2b']
+        known_models = ['phi-3-mini', 'mistral-7b-instruct']
         for known in known_models:
             if known in model_name:
                 return known
+        
+        # Si on trouve mistral-7b sans instruct, le mapper vers mistral-7b-instruct
+        if 'mistral-7b' in model_name and 'instruct' not in model_name:
+            return 'mistral-7b-instruct'
         
         return model_name
     
