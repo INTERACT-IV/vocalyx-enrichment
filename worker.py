@@ -14,7 +14,7 @@ from pathlib import Path
 from datetime import datetime
 from celery.signals import worker_init
 from celery.worker.control import Panel
-from celery import Celery, group
+from celery import Celery, group, chord
 
 from config import Config
 from infrastructure.api.api_client import VocalyxAPIClient
@@ -384,111 +384,29 @@ def enrich_transcription_task(self, transcription_id: str, use_distributed: bool
             # Obtenir le modèle LLM
             llm_model = transcription.get('llm_model', config.llm_model)
             
-            # Créer un groupe de tâches pour générer les 4 métadonnées en parallèle
-            from celery import current_app as celery_current_app
-            metadata_tasks = group(
-                generate_title_metadata_task.s(transcription_id, text_for_metadata, final_prompts, llm_model),
-                generate_summary_metadata_task.s(transcription_id, text_for_metadata, final_prompts, llm_model),
-                generate_satisfaction_metadata_task.s(transcription_id, text_for_metadata, final_prompts, llm_model),
-                generate_bullet_points_metadata_task.s(transcription_id, text_for_metadata, final_prompts, llm_model)
+            # Utiliser chord pour lancer les 4 tâches en parallèle puis appeler la callback
+            logger.info(f"[{transcription_id}] 🚀 Launching 4 parallel metadata generation tasks (title, summary, satisfaction, bullet_points) with chord...")
+            metadata_chord = chord(
+                group(
+                    generate_title_metadata_task.s(transcription_id, text_for_metadata, final_prompts, llm_model),
+                    generate_summary_metadata_task.s(transcription_id, text_for_metadata, final_prompts, llm_model),
+                    generate_satisfaction_metadata_task.s(transcription_id, text_for_metadata, final_prompts, llm_model),
+                    generate_bullet_points_metadata_task.s(transcription_id, text_for_metadata, final_prompts, llm_model)
+                ),
+                finalize_classic_metadata_task.s(transcription_id, corrected_segments, corrected_text, text_correction, start_time)
             )
             
-            logger.info(f"[{transcription_id}] 🚀 Launching 4 parallel metadata generation tasks (title, summary, satisfaction, bullet_points)...")
-            result_group = metadata_tasks.apply_async()
+            # Lancer le chord de manière asynchrone
+            metadata_chord.apply_async()
             
-            # Attendre que toutes les tâches soient terminées
-            results = result_group.get()
+            logger.info(f"[{transcription_id}] ✅ Metadata generation chord launched | Will finalize in callback task")
             
-            # Extraire les résultats
-            metadata = {}
-            title_time = 0.0
-            summary_time = 0.0
-            satisfaction_time = 0.0
-            bullet_points_time = 0.0
-            
-            for result in results:
-                task_type = result.get('task_type')
-                if task_type == 'title':
-                    metadata['title'] = result.get('result')
-                    title_time = result.get('processing_time', 0.0)
-                elif task_type == 'summary':
-                    metadata['summary'] = result.get('result')
-                    summary_time = result.get('processing_time', 0.0)
-                elif task_type == 'satisfaction':
-                    metadata['satisfaction'] = result.get('result')
-                    satisfaction_time = result.get('processing_time', 0.0)
-                elif task_type == 'bullet_points':
-                    metadata['bullet_points'] = result.get('result')
-                    bullet_points_time = result.get('processing_time', 0.0)
-            
-            metadata_time = round(time.time() - metadata_start_time, 2)
-            max_parallel_time = max(title_time, summary_time, satisfaction_time, bullet_points_time)
-            processing_time = round(time.time() - start_time, 2)
-            logger.info(f"[{transcription_id}] ✅ Parallel metadata generation completed | Total time: {metadata_time}s | Max parallel time: {max_parallel_time}s | Speedup: {sum([title_time, summary_time, satisfaction_time, bullet_points_time]) / max_parallel_time:.2f}x")
-        
-        # Construire l'objet enhanced_data avec les métadonnées (enrichissement de base)
-        # Toujours sauvegarder, même si toutes les métadonnées sont None (pour diagnostic)
-        if enrichment_requested:
-            enhanced_data = {
-                "metadata": metadata
+            # Retourner immédiatement - la callback finalisera la sauvegarde
+            return {
+                "status": "metadata_generation_started",
+                "transcription_id": transcription_id,
+                "message": "Metadata generation launched in parallel, finalization will happen in callback"
             }
-            logger.info(f"[{transcription_id}] 📊 Metadata summary: title={metadata.get('title') is not None}, summary={metadata.get('summary') is not None}, satisfaction={metadata.get('satisfaction') is not None}, bullet_points={metadata.get('bullet_points') is not None}")
-            
-            # Construire enrichment_data au format de enrich_transcription (avec les temps individuels)
-            satisfaction_score = metadata.get('satisfaction', {}).get('score') if isinstance(metadata.get('satisfaction'), dict) else None
-            bullet_points_list = metadata.get('bullet_points', {}).get('points', []) if isinstance(metadata.get('bullet_points'), dict) else []
-            
-            enrichment_data = {
-                "title": metadata.get('title'),
-                "summary": metadata.get('summary'),
-                "satisfaction_score": satisfaction_score,
-                "bullet_points": bullet_points_list[:4] if bullet_points_list else [],  # Limiter à 4 points maximum
-                "timing": {
-                    "title_time": title_time,
-                    "summary_time": summary_time,
-                    "satisfaction_time": satisfaction_time,
-                    "bullet_points_time": bullet_points_time,
-                    "total_time": metadata_time
-                }
-            }
-        else:
-            enhanced_data = None
-            enrichment_data = None
-            logger.warning(f"[{transcription_id}] ⚠️ Enrichment not requested, enhanced_text will be null")
-        
-        # Mettre à jour avec les résultats
-        logger.info(f"[{transcription_id}] 💾 Saving results to API...")
-        update_data = {
-            "status": "done",  # Mettre à jour le statut principal (comme transcription)
-            "enrichment_status": "done",
-            "enriched_segments": json.dumps(corrected_segments),
-            "enrichment_processing_time": processing_time
-        }
-        
-        # Ajouter enhanced_text si enrichment_requested=true (même si toutes les métadonnées sont None)
-        if enhanced_data:
-            update_data["enhanced_text"] = json.dumps(enhanced_data, ensure_ascii=False)
-        
-        # Ajouter enrichment_data au format de enrich_transcription
-        if enrichment_data:
-            update_data["enrichment_data"] = json.dumps(enrichment_data, ensure_ascii=False)
-        
-        # Ajouter enriched_text si text_correction=true
-        if text_correction:
-            update_data["enriched_text"] = corrected_text
-        logger.info(f"[{transcription_id}] 📤 API Update payload: {json.dumps({k: v if k != 'enriched_segments' else f'<{len(corrected_segments)} segments>' for k, v in update_data.items()})}")
-        
-        response = api_client.update_transcription(transcription_id, update_data)
-        logger.info(f"[{transcription_id}] ✅ API Update response received: status={response.get('status')}, enrichment_status={response.get('enrichment_status')}")
-        logger.info(f"[{transcription_id}] 💾 Results saved to API successfully")
-        
-        return {
-            "status": "success",
-            "transcription_id": transcription_id,
-            "processing_time": processing_time,
-            "segments_count": len(corrected_segments),
-            "mode": "classic"
-        }
         
     except Exception as e:
         logger.error(f"[{transcription_id}] ❌ Error: {e}", exc_info=True)
@@ -1025,6 +943,294 @@ def generate_bullet_points_metadata_task(self, transcription_id: str, text: str,
 
 @celery_app.task(
     bind=True,
+    name='finalize_classic_metadata',
+    max_retries=2,
+    default_retry_delay=30,
+    acks_late=True
+)
+def finalize_classic_metadata_task(self, metadata_results: list, transcription_id: str, corrected_segments: list, corrected_text: str, text_correction: bool, start_time: float):
+    """
+    Callback appelée après la génération parallèle des métadonnées en mode classique.
+    Reçoit les résultats des 4 tâches et finalise la sauvegarde.
+    
+    Args:
+        metadata_results: Liste des résultats des 4 tâches de métadonnées
+        transcription_id: ID de la transcription
+        corrected_segments: Segments corrigés (ou originaux)
+        corrected_text: Texte corrigé complet (ou None)
+        text_correction: Flag indiquant si la correction a été effectuée
+        start_time: Timestamp de début du traitement
+    """
+    logger.info(f"[{transcription_id}] 🔗 FINALIZING CLASSIC METADATA | Processing {len(metadata_results)} results")
+    
+    try:
+        # Extraire les résultats des métadonnées
+        metadata = {}
+        title_time = 0.0
+        summary_time = 0.0
+        satisfaction_time = 0.0
+        bullet_points_time = 0.0
+        
+        for result in metadata_results:
+            task_type = result.get('task_type')
+            if task_type == 'title':
+                metadata['title'] = result.get('result')
+                title_time = result.get('processing_time', 0.0)
+            elif task_type == 'summary':
+                metadata['summary'] = result.get('result')
+                summary_time = result.get('processing_time', 0.0)
+            elif task_type == 'satisfaction':
+                metadata['satisfaction'] = result.get('result')
+                satisfaction_time = result.get('processing_time', 0.0)
+            elif task_type == 'bullet_points':
+                metadata['bullet_points'] = result.get('result')
+                bullet_points_time = result.get('processing_time', 0.0)
+        
+        max_parallel_time = max(title_time, summary_time, satisfaction_time, bullet_points_time)
+        metadata_time = round(time.time() - start_time, 2)
+        processing_time = round(time.time() - start_time, 2)
+        logger.info(f"[{transcription_id}] ✅ Parallel metadata generation completed | Max parallel time: {max_parallel_time}s | Speedup: {sum([title_time, summary_time, satisfaction_time, bullet_points_time]) / max_parallel_time:.2f}x")
+        
+        # Construire l'objet enhanced_data avec les métadonnées
+        enhanced_data = {
+            "metadata": metadata
+        }
+        logger.info(f"[{transcription_id}] 📊 Metadata summary: title={metadata.get('title') is not None}, summary={metadata.get('summary') is not None}, satisfaction={metadata.get('satisfaction') is not None}, bullet_points={metadata.get('bullet_points') is not None}")
+        
+        # Construire enrichment_data
+        satisfaction_score = metadata.get('satisfaction', {}).get('score') if isinstance(metadata.get('satisfaction'), dict) else None
+        bullet_points_list = metadata.get('bullet_points', {}).get('points', []) if isinstance(metadata.get('bullet_points'), dict) else []
+        
+        enrichment_data = {
+            "title": metadata.get('title'),
+            "summary": metadata.get('summary'),
+            "satisfaction_score": satisfaction_score,
+            "bullet_points": bullet_points_list[:4] if bullet_points_list else [],
+            "timing": {
+                "title_time": title_time,
+                "summary_time": summary_time,
+                "satisfaction_time": satisfaction_time,
+                "bullet_points_time": bullet_points_time,
+                "total_time": metadata_time
+            }
+        }
+        
+        # Mettre à jour avec les résultats
+        logger.info(f"[{transcription_id}] 💾 Saving results to API...")
+        update_data = {
+            "status": "done",
+            "enrichment_status": "done",
+            "enriched_segments": json.dumps(corrected_segments),
+            "enrichment_processing_time": processing_time,
+            "enhanced_text": json.dumps(enhanced_data, ensure_ascii=False),
+            "enrichment_data": json.dumps(enrichment_data, ensure_ascii=False)
+        }
+        
+        # Ajouter enriched_text si text_correction=true
+        if text_correction and corrected_text:
+            update_data["enriched_text"] = corrected_text
+        
+        logger.info(f"[{transcription_id}] 📤 API Update payload: {json.dumps({k: v if k != 'enriched_segments' else f'<{len(corrected_segments)} segments>' for k, v in update_data.items()})}")
+        
+        api_client = get_api_client()
+        response = api_client.update_transcription(transcription_id, update_data)
+        logger.info(f"[{transcription_id}] ✅ API Update response received: status={response.get('status')}, enrichment_status={response.get('enrichment_status')}")
+        logger.info(f"[{transcription_id}] 💾 Results saved to API successfully")
+        
+        return {
+            "status": "success",
+            "transcription_id": transcription_id,
+            "processing_time": processing_time,
+            "segments_count": len(corrected_segments),
+            "mode": "classic"
+        }
+        
+    except Exception as e:
+        logger.error(f"[{transcription_id}] ❌ Finalization error: {e}", exc_info=True)
+        try:
+            api_client = get_api_client()
+            api_client.update_transcription(transcription_id, {
+                "enrichment_status": "error",
+                "enrichment_error_message": f"Metadata finalization failed: {str(e)}"
+            })
+        except:
+            pass
+        raise
+
+
+@celery_app.task(
+    bind=True,
+    name='finalize_metadata_aggregation',
+    max_retries=2,
+    default_retry_delay=30,
+    acks_late=True
+)
+def finalize_metadata_aggregation_task(self, metadata_results: list, transcription_id: str):
+    """
+    Callback appelée après la génération parallèle des métadonnées.
+    Reçoit les résultats des 4 tâches et finalise la sauvegarde.
+    
+    Args:
+        metadata_results: Liste des résultats des 4 tâches de métadonnées
+        transcription_id: ID de la transcription
+    """
+    logger.info(f"[{transcription_id}] 🔗 FINALIZING METADATA AGGREGATION | Processing {len(metadata_results)} results")
+    start_time = time.time()
+    
+    try:
+        redis_manager = get_redis_manager()
+        metadata = redis_manager.get_metadata(transcription_id)
+        
+        if not metadata:
+            raise ValueError(f"Metadata not found for transcription {transcription_id}")
+        
+        total_chunks = metadata['total_chunks']
+        
+        # Récupérer tous les résultats des chunks depuis Redis
+        all_enriched_segments = []
+        max_chunk_time = 0.0
+        
+        for i in range(total_chunks):
+            result = redis_manager.get_chunk_result(transcription_id, i)
+            if not result:
+                raise ValueError(f"Result not found for chunk {i} of transcription {transcription_id}")
+            
+            all_enriched_segments.extend(result['enriched_segments'])
+            chunk_time = result.get('processing_time', 0.0)
+            max_chunk_time = max(max_chunk_time, chunk_time)
+        
+        # Trier les segments par timestamp
+        all_enriched_segments.sort(key=lambda x: x.get('start', 0.0))
+        
+        # Calculer le temps réel écoulé
+        orchestration_start_time = metadata.get('orchestration_start_time')
+        if orchestration_start_time:
+            real_elapsed_time = round(time.time() - orchestration_start_time, 2)
+        else:
+            real_elapsed_time = max_chunk_time
+        
+        # Extraire les résultats des métadonnées
+        metadata_result = {}
+        title_time = 0.0
+        summary_time = 0.0
+        satisfaction_time = 0.0
+        bullet_points_time = 0.0
+        
+        for result in metadata_results:
+            task_type = result.get('task_type')
+            if task_type == 'title':
+                metadata_result['title'] = result.get('result')
+                title_time = result.get('processing_time', 0.0)
+            elif task_type == 'summary':
+                metadata_result['summary'] = result.get('result')
+                summary_time = result.get('processing_time', 0.0)
+            elif task_type == 'satisfaction':
+                metadata_result['satisfaction'] = result.get('result')
+                satisfaction_time = result.get('processing_time', 0.0)
+            elif task_type == 'bullet_points':
+                metadata_result['bullet_points'] = result.get('result')
+                bullet_points_time = result.get('processing_time', 0.0)
+        
+        max_parallel_time = max(title_time, summary_time, satisfaction_time, bullet_points_time)
+        metadata_time = round(time.time() - start_time, 2)
+        logger.info(f"[{transcription_id}] ✅ Parallel metadata generation completed | Max parallel time: {max_parallel_time}s | Speedup: {sum([title_time, summary_time, satisfaction_time, bullet_points_time]) / max_parallel_time:.2f}x")
+        
+        # Construire l'objet enhanced_data avec les métadonnées
+        enhanced_data = {
+            "metadata": metadata_result
+        }
+        logger.info(f"[{transcription_id}] 📊 Metadata summary: title={metadata_result.get('title') is not None}, summary={metadata_result.get('summary') is not None}, satisfaction={metadata_result.get('satisfaction') is not None}, bullet_points={metadata_result.get('bullet_points') is not None}")
+        
+        # Construire enrichment_data
+        satisfaction_score = metadata_result.get('satisfaction', {}).get('score') if isinstance(metadata_result.get('satisfaction'), dict) else None
+        bullet_points_list = metadata_result.get('bullet_points', {}).get('points', []) if isinstance(metadata_result.get('bullet_points'), dict) else []
+        
+        enrichment_data = {
+            "title": metadata_result.get('title'),
+            "summary": metadata_result.get('summary'),
+            "satisfaction_score": satisfaction_score,
+            "bullet_points": bullet_points_list[:4] if bullet_points_list else [],
+            "timing": {
+                "title_time": title_time,
+                "summary_time": summary_time,
+                "satisfaction_time": satisfaction_time,
+                "bullet_points_time": bullet_points_time,
+                "total_time": metadata_time
+            }
+        }
+        
+        # Construire le texte complet (corrigé si text_correction=true, sinon original)
+        text_correction = metadata.get('text_correction', False)
+        
+        # Sauvegarder le résultat final
+        api_client = get_api_client()
+        aggregation_time = round(time.time() - start_time, 2)
+        
+        if orchestration_start_time:
+            total_processing_time = round(time.time() - orchestration_start_time, 2)
+        else:
+            total_processing_time = round(max_chunk_time + aggregation_time, 2)
+        
+        update_data = {
+            "status": "done",
+            "enrichment_status": "done",
+            "enriched_segments": json.dumps(all_enriched_segments),
+            "enrichment_processing_time": total_processing_time,
+            "enhanced_text": json.dumps(enhanced_data, ensure_ascii=False),
+            "enrichment_data": json.dumps(enrichment_data, ensure_ascii=False)
+        }
+        
+        # Ajouter enriched_text si text_correction=true
+        if text_correction:
+            corrected_text = " ".join(
+                seg.get('enriched_text', seg.get('text', '')) 
+                for seg in all_enriched_segments 
+                if seg.get('enriched_text', seg.get('text', '')).strip()
+            )
+            update_data["enriched_text"] = corrected_text
+        
+        logger.info(f"[{transcription_id}] 📤 FINALIZING METADATA | API Update payload: {json.dumps({k: v if k != 'enriched_segments' else f'<{len(all_enriched_segments)} segments>' for k, v in update_data.items()})}")
+        
+        response = api_client.update_transcription(transcription_id, update_data)
+        logger.info(f"[{transcription_id}] ✅ FINALIZING METADATA | API Update response: status={response.get('status')}, enrichment_status={response.get('enrichment_status')}")
+        
+        logger.info(
+            f"[{transcription_id}] ✅ DISTRIBUTED AGGREGATION | Step 2/2: Aggregation completed | "
+            f"Total segments: {len(all_enriched_segments)} | "
+            f"Real processing time: {total_processing_time:.1f}s (from orchestration start) | "
+            f"Max chunk time: {max_chunk_time:.1f}s | "
+            f"Aggregation time: {aggregation_time:.1f}s | "
+            f"Result saved to database"
+        )
+        
+        # Nettoyer les données Redis
+        try:
+            redis_manager.cleanup(transcription_id, total_chunks)
+        except Exception as cleanup_error:
+            logger.warning(f"[{transcription_id}] ⚠️ Cleanup error: {cleanup_error}")
+        
+        return {
+            "status": "success",
+            "transcription_id": transcription_id,
+            "segments_count": len(all_enriched_segments),
+            "total_processing_time": total_processing_time
+        }
+        
+    except Exception as e:
+        logger.error(f"[{transcription_id}] ❌ Finalization error: {e}", exc_info=True)
+        try:
+            api_client = get_api_client()
+            api_client.update_transcription(transcription_id, {
+                "enrichment_status": "error",
+                "enrichment_error_message": f"Metadata finalization failed: {str(e)}"
+            })
+        except:
+            pass
+        raise
+
+
+@celery_app.task(
+    bind=True,
     name='aggregate_enrichment_chunks',
     max_retries=2,
     default_retry_delay=30,
@@ -1107,9 +1313,8 @@ def aggregate_enrichment_chunks_task(self, transcription_id: str):
         
         # Générer les métadonnées (titre, résumé, score, bullet points) - C'EST L'ENRICHISSEMENT DE BASE
         # Les métadonnées sont TOUJOURS générées si enrichment_requested=true
-        # OPTIMISATION: Génération en parallèle sur 4 workers différents
+        # OPTIMISATION: Génération en parallèle sur 4 workers différents avec chord
         logger.info(f"[{transcription_id}] 📊 Generating metadata (title, summary, satisfaction, bullet_points) - ENRICHISSEMENT DE BASE (PARALLEL)...")
-        metadata_start_time = time.time()
         # Obtenir les prompts finaux depuis les métadonnées
         from enrichment_service import DEFAULT_ENRICHMENT_PROMPTS
         enrichment_prompts = metadata.get('enrichment_prompts')
@@ -1120,123 +1325,28 @@ def aggregate_enrichment_chunks_task(self, transcription_id: str):
         # Obtenir le modèle LLM
         llm_model = metadata.get('llm_model', config.llm_model)
         
-        # Créer un groupe de tâches pour générer les 4 métadonnées en parallèle
-        from celery import current_app as celery_current_app
-        metadata_tasks = group(
-            generate_title_metadata_task.s(transcription_id, enriched_text, final_prompts, llm_model),
-            generate_summary_metadata_task.s(transcription_id, enriched_text, final_prompts, llm_model),
-            generate_satisfaction_metadata_task.s(transcription_id, enriched_text, final_prompts, llm_model),
-            generate_bullet_points_metadata_task.s(transcription_id, enriched_text, final_prompts, llm_model)
+        # Utiliser chord pour lancer les 4 tâches en parallèle puis appeler la callback
+        logger.info(f"[{transcription_id}] 🚀 Launching 4 parallel metadata generation tasks (title, summary, satisfaction, bullet_points) with chord...")
+        metadata_chord = chord(
+            group(
+                generate_title_metadata_task.s(transcription_id, enriched_text, final_prompts, llm_model),
+                generate_summary_metadata_task.s(transcription_id, enriched_text, final_prompts, llm_model),
+                generate_satisfaction_metadata_task.s(transcription_id, enriched_text, final_prompts, llm_model),
+                generate_bullet_points_metadata_task.s(transcription_id, enriched_text, final_prompts, llm_model)
+            ),
+            finalize_metadata_aggregation_task.s(transcription_id)
         )
         
-        logger.info(f"[{transcription_id}] 🚀 Launching 4 parallel metadata generation tasks (title, summary, satisfaction, bullet_points)...")
-        result_group = metadata_tasks.apply_async()
+        # Lancer le chord de manière asynchrone
+        metadata_chord.apply_async()
         
-        # Attendre que toutes les tâches soient terminées
-        results = result_group.get()
+        logger.info(f"[{transcription_id}] ✅ Metadata generation chord launched | Will finalize in callback task")
         
-        # Extraire les résultats
-        metadata_result = {}
-        title_time = 0.0
-        summary_time = 0.0
-        satisfaction_time = 0.0
-        bullet_points_time = 0.0
-        
-        for result in results:
-            task_type = result.get('task_type')
-            if task_type == 'title':
-                metadata_result['title'] = result.get('result')
-                title_time = result.get('processing_time', 0.0)
-            elif task_type == 'summary':
-                metadata_result['summary'] = result.get('result')
-                summary_time = result.get('processing_time', 0.0)
-            elif task_type == 'satisfaction':
-                metadata_result['satisfaction'] = result.get('result')
-                satisfaction_time = result.get('processing_time', 0.0)
-            elif task_type == 'bullet_points':
-                metadata_result['bullet_points'] = result.get('result')
-                bullet_points_time = result.get('processing_time', 0.0)
-        
-        metadata_time = round(time.time() - metadata_start_time, 2)
-        max_parallel_time = max(title_time, summary_time, satisfaction_time, bullet_points_time)
-        logger.info(f"[{transcription_id}] ✅ Parallel metadata generation completed | Total time: {metadata_time}s | Max parallel time: {max_parallel_time}s | Speedup: {sum([title_time, summary_time, satisfaction_time, bullet_points_time]) / max_parallel_time:.2f}x")
-        
-        # Construire l'objet enhanced_data avec les métadonnées (enrichissement de base)
-        # Toujours sauvegarder, même si toutes les métadonnées sont None (pour diagnostic)
-        enhanced_data = {
-            "metadata": metadata_result
-        }
-        logger.info(f"[{transcription_id}] 📊 Metadata summary: title={metadata_result.get('title') is not None}, summary={metadata_result.get('summary') is not None}, satisfaction={metadata_result.get('satisfaction') is not None}, bullet_points={metadata_result.get('bullet_points') is not None}")
-        
-        # Construire enrichment_data au format de enrich_transcription (avec les temps individuels)
-        satisfaction_score = metadata_result.get('satisfaction', {}).get('score') if isinstance(metadata_result.get('satisfaction'), dict) else None
-        bullet_points_list = metadata_result.get('bullet_points', {}).get('points', []) if isinstance(metadata_result.get('bullet_points'), dict) else []
-        
-        enrichment_data = {
-            "title": metadata_result.get('title'),
-            "summary": metadata_result.get('summary'),
-            "satisfaction_score": satisfaction_score,
-            "bullet_points": bullet_points_list[:4] if bullet_points_list else [],  # Limiter à 4 points maximum
-            "timing": {
-                "title_time": title_time,
-                "summary_time": summary_time,
-                "satisfaction_time": satisfaction_time,
-                "bullet_points_time": bullet_points_time,
-                "total_time": metadata_time
-            }
-        }
-        
-        # Sauvegarder le résultat final
-        api_client = get_api_client()
-        aggregation_time = round(time.time() - start_time, 2)
-        
-        if orchestration_start_time:
-            total_processing_time = round(time.time() - orchestration_start_time, 2)
-        else:
-            total_processing_time = round(max_chunk_time + aggregation_time, 2)
-        
-        update_data = {
-            "status": "done",  # Mettre à jour le statut principal (comme transcription)
-            "enrichment_status": "done",
-            "enriched_segments": json.dumps(all_enriched_segments),
-            "enrichment_processing_time": total_processing_time,
-            "enhanced_text": json.dumps(enhanced_data, ensure_ascii=False),  # Toujours sauvegarder les métadonnées
-            "enrichment_data": json.dumps(enrichment_data, ensure_ascii=False)  # Format enrich_transcription avec les temps
-        }
-        
-        # Ajouter enriched_text si text_correction=true
-        if text_correction:
-            corrected_text = " ".join(
-                seg.get('enriched_text', seg.get('text', '')) 
-                for seg in all_enriched_segments 
-                if seg.get('enriched_text', seg.get('text', '')).strip()
-            )
-            update_data["enriched_text"] = corrected_text
-        logger.info(f"[{transcription_id}] 📤 DISTRIBUTED AGGREGATION | API Update payload: {json.dumps({k: v if k != 'enriched_segments' else f'<{len(all_enriched_segments)} segments>' for k, v in update_data.items()})}")
-        
-        response = api_client.update_transcription(transcription_id, update_data)
-        logger.info(f"[{transcription_id}] ✅ DISTRIBUTED AGGREGATION | API Update response: status={response.get('status')}, enrichment_status={response.get('enrichment_status')}")
-        
-        logger.info(
-            f"[{transcription_id}] ✅ DISTRIBUTED AGGREGATION | Step 2/2: Aggregation completed | "
-            f"Total segments: {len(all_enriched_segments)} | "
-            f"Real processing time: {total_processing_time:.1f}s (from orchestration start) | "
-            f"Max chunk time: {max_chunk_time:.1f}s | "
-            f"Aggregation time: {aggregation_time:.1f}s | "
-            f"Result saved to database"
-        )
-        
-        # Nettoyer les données Redis
-        try:
-            redis_manager.cleanup(transcription_id, total_chunks)
-        except Exception as cleanup_error:
-            logger.warning(f"[{transcription_id}] ⚠️ Cleanup error: {cleanup_error}")
-        
+        # Retourner immédiatement - la callback finalisera la sauvegarde
         return {
-            "status": "success",
+            "status": "metadata_generation_started",
             "transcription_id": transcription_id,
-            "segments_count": len(all_enriched_segments),
-            "total_processing_time": total_processing_time
+            "message": "Metadata generation launched in parallel, finalization will happen in callback"
         }
         
     except Exception as e:
