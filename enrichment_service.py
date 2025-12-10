@@ -32,12 +32,12 @@ class EnrichmentService:
         
         Args:
             config: Configuration du worker (optionnel)
-            model_name: Nom du modèle LLM (ex: "tinyllama", "phi-3-mini") ou chemin complet
+            model_name: Nom du modèle LLM (ex: "phi-3-mini", "mistral-7b-instruct") ou chemin complet
             models_dir: Répertoire contenant les modèles (défaut: depuis config ou /app/shared/models/enrichment)
             device: Device à utiliser ("cpu" uniquement pour GGUF)
         """
         self.config = config
-        self.model_name = model_name or (getattr(config, 'llm_model', 'tinyllama') if config else 'tinyllama')
+        self.model_name = model_name or (getattr(config, 'llm_model', 'phi-3-mini') if config else 'phi-3-mini')
         self.device = device or (getattr(config, 'llm_device', 'cpu') if config else 'cpu')
         
         # Gestionnaire de modèles
@@ -144,9 +144,7 @@ class EnrichmentService:
             # Déterminer les tokens d'arrêt selon le modèle
             if stop_tokens is None:
                 model_lower = self.model_name.lower()
-                if 'tinyllama' in model_lower:
-                    stop_tokens = ["</s>", "<|user|>", "<|system|>", "<|assistant|>", "\n\n\n"]
-                elif 'phi-3' in model_lower or 'phi3' in model_lower:
+                if 'phi-3' in model_lower or 'phi3' in model_lower:
                     stop_tokens = ["<|end|>", "<|user|>", "<|system|>", "<|assistant|>", "\n\n\n"]
                 elif 'mistral' in model_lower:
                     stop_tokens = ["</s>", "[INST]", "[/INST]", "\n\n\n"]
@@ -155,9 +153,7 @@ class EnrichmentService:
             
             # Formater le prompt selon le modèle
             model_lower = self.model_name.lower()
-            if 'tinyllama' in model_lower:
-                formatted_prompt = f"<|system|>\n{prompt}</s>\n<|assistant|>\n"
-            elif 'phi-3' in model_lower or 'phi3' in model_lower:
+            if 'phi-3' in model_lower or 'phi3' in model_lower:
                 formatted_prompt = f"<|system|>\n{prompt}<|end|>\n<|assistant|>\n"
             elif 'mistral' in model_lower:
                 formatted_prompt = f"<s>[INST] {prompt} [/INST]"

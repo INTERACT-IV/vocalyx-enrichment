@@ -17,81 +17,17 @@ class ModelManager:
     # Modèles recommandés pour CPU (quantisés GGUF)
     # Triés du plus léger au plus lourd
     RECOMMENDED_MODELS = {
-        # ===== MODÈLES ULTRA-LÉGERS (< 1.5 GB) =====
-        'gemma-2b': {
-            'repo_id': 'google/gemma-2b-it-GGUF',
-            'filename': 'gemma-2b-it-q4_K_M.gguf',
-            'size_gb': 1.4,
-            'description': 'Gemma 2B - Très léger, très rapide (recommandé pour CPU faible)'
-        },
-        'phi-3-mini-q2': {
-            'repo_id': 'microsoft/Phi-3-mini-4k-instruct-gguf',
-            'filename': 'Phi-3-mini-4k-instruct-q2_K.gguf',
-            'size_gb': 1.2,
-            'description': 'Phi-3 Mini Q2 - Ultra-léger (1.2 GB), très rapide, qualité réduite'
-        },
-        'phi-3-mini-q3': {
-            'repo_id': 'microsoft/Phi-3-mini-4k-instruct-gguf',
-            'filename': 'Phi-3-mini-4k-instruct-q3_K_M.gguf',
-            'size_gb': 1.6,
-            'description': 'Phi-3 Mini Q3 - Léger (1.6 GB), rapide, bon compromis'
-        },
-        # ===== MODÈLES LÉGERS (1.5-3 GB) =====
         'phi-3-mini': {
             'repo_id': 'microsoft/Phi-3-mini-4k-instruct-gguf',
             'filename': 'Phi-3-mini-4k-instruct-q4.gguf',  # Nom du fichier local (correspond au fichier dans shared/)
             'size_gb': 2.3,
             'description': 'Phi-3 Mini 3.8B Q4 - Léger et rapide, idéal pour CPU (défaut)'
         },
-        'phi-2': {
-            'repo_id': 'microsoft/phi-2-gguf',
-            'filename': 'phi-2.Q4_K_M.gguf',
-            'size_gb': 1.6,
-            'description': 'Phi-2 2.7B - Très léger, rapide, bon pour raisonnement'
-        },
-        'tinyllama': {
-            'repo_id': 'TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF',
-            'filename': 'tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf',
-            'size_gb': 0.67,
-            'description': 'TinyLlama 1.1B Q4_K_M - Ultra-léger (669 MB), très rapide, bon compromis qualité/vitesse (recommandé)'
-        },
-        'tinyllama-q2': {
-            'repo_id': 'TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF',
-            'filename': 'tinyllama-1.1b-chat-v1.0.Q2_K.gguf',
-            'size_gb': 0.48,
-            'description': 'TinyLlama 1.1B Q2_K - Ultra-léger (483 MB), très rapide, qualité réduite'
-        },
-        'tinyllama-q3': {
-            'repo_id': 'TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF',
-            'filename': 'tinyllama-1.1b-chat-v1.0.Q3_K_M.gguf',
-            'size_gb': 0.55,
-            'description': 'TinyLlama 1.1B Q3_K_M - Ultra-léger (551 MB), très rapide, bon compromis'
-        },
-        'tinyllama-q5': {
-            'repo_id': 'TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF',
-            'filename': 'tinyllama-1.1b-chat-v1.0.Q5_K_M.gguf',
-            'size_gb': 0.78,
-            'description': 'TinyLlama 1.1B Q5_K_M - Léger (783 MB), meilleure qualité, un peu plus lent'
-        },
-        # ===== MODÈLES MOYENS (3-5 GB) =====
         'mistral-7b-instruct': {
-            'repo_id': 'TheBloke/Mistral-7B-Instruct-v0.2-GGUF',
-            'filename': 'mistral-7b-instruct-v0.2.Q4_K_M.gguf',
+            'repo_id': 'TheBloke/Mistral-7B-Instruct-v0.3-GGUF',
+            'filename': 'Mistral-7B-Instruct-v0.3-Q4_K_M.gguf',
             'size_gb': 4.1,
-            'description': 'Mistral 7B Instruct - Bon équilibre qualité/vitesse'
-        },
-        'llama-3-8b-instruct': {
-            'repo_id': 'bartowski/Llama-3-8B-Instruct-GGUF',
-            'filename': 'llama-3-8b-instruct-q4_K_M.gguf',
-            'size_gb': 4.6,
-            'description': 'Llama 3 8B Instruct - Excellente qualité'
-        },
-        # ===== MODÈLES LOURDS (> 5 GB) =====
-        'phi-3-medium': {
-            'repo_id': 'microsoft/Phi-3-medium-4k-instruct-gguf',
-            'filename': 'Phi-3-medium-4k-instruct-q4_K_M.gguf',
-            'size_gb': 7.0,
-            'description': 'Phi-3 Medium 14B - Meilleure qualité, plus lent'
+            'description': 'Mistral 7B Instruct v0.3 - Bon équilibre qualité/vitesse'
         }
     }
     

@@ -51,7 +51,7 @@ class Config:
         }
         
         config['LLM'] = {
-            'model': 'tinyllama',
+            'model': 'phi-3-mini',
             'models_dir': '/app/shared/models/enrichment',
             'device': 'cpu',
             'compute_type': 'int8',
@@ -149,7 +149,7 @@ class Config:
         # LLM
         self.llm_model = os.environ.get(
             'LLM_MODEL', 
-            self.config.get('LLM', 'model', fallback='tinyllama')
+            self.config.get('LLM', 'model', fallback='phi-3-mini')
         )
         self.llm_models_dir = os.environ.get(
             'LLM_MODELS_DIR',
