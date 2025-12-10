@@ -322,8 +322,8 @@ class EnrichmentService:
                                 break
                     
                     if end > start:
-                    json_str = response[start:end]
-                    data = json.loads(json_str)
+                        json_str = response[start:end]
+                        data = json.loads(json_str)
                         score = int(data.get("score", 5))
                         justification = data.get("justification", "")
                         
@@ -338,7 +338,7 @@ class EnrichmentService:
                                 elif isinstance(nested_json, dict) and "score" in nested_json:
                                     # Si c'est un objet avec score, prendre juste le texte
                                     justification = str(nested_json.get("justification", ""))
-            except:
+                            except:
                                 # Si le parsing échoue, garder la justification originale
                                 pass
                         
