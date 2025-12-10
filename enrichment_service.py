@@ -157,6 +157,14 @@ class EnrichmentService:
                 f"Batch: {self.n_batch}"
             )
             
+            # Vérifier la version de llama-cpp-python
+            try:
+                import llama_cpp
+                llama_version = getattr(llama_cpp, '__version__', 'unknown')
+                logger.info(f"📦 llama-cpp-python version: {llama_version}")
+            except Exception:
+                logger.warning("⚠️ Cannot determine llama-cpp-python version")
+            
             # Charger le modèle GGUF avec llama-cpp-python
             try:
                 self.llm = Llama(
@@ -169,21 +177,44 @@ class EnrichmentService:
                     use_mmap=True,
                     use_mlock=False
                 )
-            except ValueError as e:
+            except (ValueError, RuntimeError, OSError) as e:
                 # Améliorer le message d'erreur pour les problèmes de chargement
-                logger.error(
+                import llama_cpp
+                llama_version = getattr(llama_cpp, '__version__', 'unknown')
+                
+                # Vérifier la version minimale recommandée
+                version_ok = True
+                try:
+                    from packaging import version
+                    if version.parse(llama_version) < version.parse("0.2.20"):
+                        version_ok = False
+                except:
+                    pass
+                
+                error_msg = (
                     f"❌ Failed to load GGUF model with llama-cpp-python:\n"
                     f"   Path: {model_path_str}\n"
                     f"   File exists: {model_path.exists()}\n"
                     f"   File size: {model_path.stat().st_size / (1024**3):.2f} GB\n"
+                    f"   llama-cpp-python version: {llama_version}\n"
                     f"   Error: {e}\n"
                     f"   Possible causes:\n"
+                    f"   - llama-cpp-python version too old (need >= 0.2.20 for Qwen 2.5)\n"
                     f"   - File is corrupted or incomplete\n"
                     f"   - File is not a valid GGUF format\n"
-                    f"   - llama-cpp-python version incompatible\n"
-                    f"   - Insufficient memory"
+                    f"   - Insufficient memory\n"
                 )
-                raise
+                
+                if not version_ok:
+                    error_msg += (
+                        f"\n   💡 Solution: Upgrade llama-cpp-python:\n"
+                        f"      pip install --upgrade llama-cpp-python\n"
+                        f"      or with CPU optimizations:\n"
+                        f"      CMAKE_ARGS=\"-DLLAMA_BLAS=ON -DLLAMA_BLAS_VENDOR=OpenBLAS\" pip install --upgrade llama-cpp-python"
+                    )
+                
+                logger.error(error_msg)
+                raise ValueError(f"Failed to load model: {e}") from e
             
             logger.info(f"✅ Model {self.model_name} loaded successfully")
         except Exception as e:
@@ -263,7 +294,8 @@ class EnrichmentService:
             # Nettoyer les tokens spéciaux
             tokens_to_remove = [
                 '</s>', '<|end|>', '<|user|>', '<|system|>', '<|assistant|>',
-                '<|im_start|>', '<|im_end|>', '[INST]', '[/INST]', '<s>', '</s>'
+                '<|im_start|>', '<|im_end|>', '[INST]', '[/INST]', '<s>', '</s>',
+                '<|eot_id|>', '<|end_of_text|>', '<end_of_text>', '<eos>'
             ]
             for token in tokens_to_remove:
                 generated_text = generated_text.replace(token, '')
@@ -302,7 +334,15 @@ class EnrichmentService:
             if not title or not title.strip():
                 return ""
             
-            # Nettoyer le titre : supprimer les guillemets, prendre la première phrase, max 10 mots
+            # Nettoyer le titre : supprimer les préfixes, guillemets, prendre la première phrase, max 10 mots
+            title = title.strip()
+            
+            # Supprimer les préfixes indésirables (spécifique à Qwen et autres modèles)
+            # Exemples: "Titre :", "Titre:", "Title:", "Titre: Rappel sinistre" -> "Rappel sinistre"
+            # Pattern amélioré pour capturer avec espaces avant/après les deux-points
+            title = re.sub(r'^Titre\s*:\s*', '', title, flags=re.IGNORECASE)
+            title = re.sub(r'^Titre\s+', '', title, flags=re.IGNORECASE)  # "Titre " sans deux-points
+            title = re.sub(r'^Title\s*:\s*', '', title, flags=re.IGNORECASE)
             title = title.strip()
             
             # Supprimer les guillemets au début et à la fin
@@ -354,6 +394,18 @@ class EnrichmentService:
             summary = self._generate_text(full_prompt, max_tokens=150, temperature=0.7)
             if not summary or not summary.strip():
                 return ""
+            
+            # Supprimer les préfixes indésirables (spécifique à Qwen et autres modèles)
+            # Exemples: "Résumé (50 mots) :", "Résumé (50 mots):", "Summary:", "Résumé:", etc.
+            # Pattern amélioré pour capturer avec espaces avant/après les deux-points
+            summary = re.sub(r'^Résumé\s*\([^)]*\)\s*:\s*', '', summary, flags=re.IGNORECASE)  # "Résumé (50 mots) :"
+            summary = re.sub(r'^Résumé\s*\([^)]*\)\s+', '', summary, flags=re.IGNORECASE)  # "Résumé (50 mots) " sans deux-points
+            summary = re.sub(r'^Résumé\s*:\s*', '', summary, flags=re.IGNORECASE)  # "Résumé :"
+            summary = re.sub(r'^Résumé\s+', '', summary, flags=re.IGNORECASE)  # "Résumé " sans deux-points
+            summary = re.sub(r'^Summary\s*\([^)]*\)\s*:\s*', '', summary, flags=re.IGNORECASE)
+            summary = re.sub(r'^Summary\s*:\s*', '', summary, flags=re.IGNORECASE)
+            summary = summary.strip()
+            
             # Limiter à 100 mots
             words = summary.split()[:100]
             result = " ".join(words).strip()

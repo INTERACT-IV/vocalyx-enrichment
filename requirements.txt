@@ -16,11 +16,12 @@ colorama>=0.4.6
 
 # LLM Libraries - CPU-optimized
 # llama-cpp-python: Backend principal pour modèles GGUF quantisés (CPU-only)
+# Version minimale 0.2.20 requise pour Qwen 2.5 et modèles récents
 # Installation recommandée avec optimisations CPU:
 #   CMAKE_ARGS="-DLLAMA_BLAS=ON -DLLAMA_BLAS_VENDOR=OpenBLAS" pip install llama-cpp-python
 #   ou pour Mac M1/M2:
 #   CMAKE_ARGS="-DLLAMA_METAL=ON" pip install llama-cpp-python
-llama-cpp-python>=0.2.0
+llama-cpp-python>=0.2.20
 
 # Hugging Face Hub: Pour télécharger les modèles GGUF
 huggingface-hub>=0.19.0
