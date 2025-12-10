@@ -383,10 +383,13 @@ def enrich_transcription_task(self, transcription_id: str, use_distributed: bool
             
             metadata = {}
             
-            # Générer le titre
+            # Générer le titre avec mesure du temps
+            title_time = 0.0
             try:
                 logger.info(f"[{transcription_id}] 📊 Generating title...")
+                title_start = time.time()
                 title_response = enrichment_service.generate_metadata(text_for_metadata, "title", final_prompts, max_tokens=50)
+                title_time = round(time.time() - title_start, 2)
                 metadata['title'] = title_response.strip() if title_response else None
                 if metadata['title']:
                     logger.info(f"[{transcription_id}] ✅ Title generated: {metadata['title'][:50]}...")
@@ -396,10 +399,13 @@ def enrich_transcription_task(self, transcription_id: str, use_distributed: bool
                 logger.warning(f"[{transcription_id}] ⚠️ Failed to generate title: {e}", exc_info=True)
                 metadata['title'] = None
             
-            # Générer le résumé
+            # Générer le résumé avec mesure du temps
+            summary_time = 0.0
             try:
                 logger.info(f"[{transcription_id}] 📊 Generating summary...")
+                summary_start = time.time()
                 summary_response = enrichment_service.generate_metadata(text_for_metadata, "summary", final_prompts, max_tokens=150)
+                summary_time = round(time.time() - summary_start, 2)
                 metadata['summary'] = summary_response.strip() if summary_response else None
                 if metadata['summary']:
                     logger.info(f"[{transcription_id}] ✅ Summary generated: {metadata['summary'][:100]}...")
@@ -409,10 +415,13 @@ def enrich_transcription_task(self, transcription_id: str, use_distributed: bool
                 logger.warning(f"[{transcription_id}] ⚠️ Failed to generate summary: {e}", exc_info=True)
                 metadata['summary'] = None
             
-            # Générer le score de satisfaction
+            # Générer le score de satisfaction avec mesure du temps
+            satisfaction_time = 0.0
             try:
                 logger.info(f"[{transcription_id}] 📊 Generating satisfaction score...")
+                satisfaction_start = time.time()
                 satisfaction_response = enrichment_service.generate_metadata(text_for_metadata, "satisfaction", final_prompts, max_tokens=100)
+                satisfaction_time = round(time.time() - satisfaction_start, 2)
                 # Parser le JSON
                 import json as json_lib
                 if satisfaction_response and satisfaction_response.strip():
@@ -430,10 +439,13 @@ def enrich_transcription_task(self, transcription_id: str, use_distributed: bool
                 logger.warning(f"[{transcription_id}] ⚠️ Failed to generate satisfaction score: {e}", exc_info=True)
                 metadata['satisfaction'] = None
             
-            # Générer les bullet points
+            # Générer les bullet points avec mesure du temps
+            bullet_points_time = 0.0
             try:
                 logger.info(f"[{transcription_id}] 📊 Generating bullet points...")
+                bullet_start = time.time()
                 bullet_response = enrichment_service.generate_metadata(text_for_metadata, "bullet_points", final_prompts, max_tokens=200)
+                bullet_points_time = round(time.time() - bullet_start, 2)
                 # Parser le JSON
                 import json as json_lib
                 if bullet_response and bullet_response.strip():
@@ -462,8 +474,27 @@ def enrich_transcription_task(self, transcription_id: str, use_distributed: bool
                 "metadata": metadata
             }
             logger.info(f"[{transcription_id}] 📊 Metadata summary: title={metadata.get('title') is not None}, summary={metadata.get('summary') is not None}, satisfaction={metadata.get('satisfaction') is not None}, bullet_points={metadata.get('bullet_points') is not None}")
+            
+            # Construire enrichment_data au format de enrich_transcription (avec les temps individuels)
+            satisfaction_score = metadata.get('satisfaction', {}).get('score') if isinstance(metadata.get('satisfaction'), dict) else None
+            bullet_points_list = metadata.get('bullet_points', {}).get('points', []) if isinstance(metadata.get('bullet_points'), dict) else []
+            
+            enrichment_data = {
+                "title": metadata.get('title'),
+                "summary": metadata.get('summary'),
+                "satisfaction_score": satisfaction_score,
+                "bullet_points": bullet_points_list[:4] if bullet_points_list else [],  # Limiter à 4 points maximum
+                "timing": {
+                    "title_time": title_time,
+                    "summary_time": summary_time,
+                    "satisfaction_time": satisfaction_time,
+                    "bullet_points_time": bullet_points_time,
+                    "total_time": metadata_time
+                }
+            }
         else:
             enhanced_data = None
+            enrichment_data = None
             logger.warning(f"[{transcription_id}] ⚠️ Enrichment not requested, enhanced_text will be null")
         
         # Mettre à jour avec les résultats
@@ -478,6 +509,10 @@ def enrich_transcription_task(self, transcription_id: str, use_distributed: bool
         # Ajouter enhanced_text si enrichment_requested=true (même si toutes les métadonnées sont None)
         if enhanced_data:
             update_data["enhanced_text"] = json.dumps(enhanced_data, ensure_ascii=False)
+        
+        # Ajouter enrichment_data au format de enrich_transcription
+        if enrichment_data:
+            update_data["enrichment_data"] = json.dumps(enrichment_data, ensure_ascii=False)
         
         # Ajouter enriched_text si text_correction=true
         if text_correction:
@@ -930,10 +965,13 @@ def aggregate_enrichment_chunks_task(self, transcription_id: str):
         
         metadata_result = {}
         
-        # Générer le titre
+        # Générer le titre avec mesure du temps
+        title_time = 0.0
         try:
             logger.info(f"[{transcription_id}] 📊 Generating title...")
+            title_start = time.time()
             title_response = enrichment_service.generate_metadata(enriched_text, "title", final_prompts, max_tokens=50)
+            title_time = round(time.time() - title_start, 2)
             metadata_result['title'] = title_response.strip() if title_response else None
             if metadata_result['title']:
                 logger.info(f"[{transcription_id}] ✅ Title generated: {metadata_result['title'][:50]}...")
@@ -943,10 +981,13 @@ def aggregate_enrichment_chunks_task(self, transcription_id: str):
             logger.warning(f"[{transcription_id}] ⚠️ Failed to generate title: {e}", exc_info=True)
             metadata_result['title'] = None
         
-        # Générer le résumé
+        # Générer le résumé avec mesure du temps
+        summary_time = 0.0
         try:
             logger.info(f"[{transcription_id}] 📊 Generating summary...")
+            summary_start = time.time()
             summary_response = enrichment_service.generate_metadata(enriched_text, "summary", final_prompts, max_tokens=150)
+            summary_time = round(time.time() - summary_start, 2)
             metadata_result['summary'] = summary_response.strip() if summary_response else None
             if metadata_result['summary']:
                 logger.info(f"[{transcription_id}] ✅ Summary generated: {metadata_result['summary'][:100]}...")
@@ -956,10 +997,13 @@ def aggregate_enrichment_chunks_task(self, transcription_id: str):
             logger.warning(f"[{transcription_id}] ⚠️ Failed to generate summary: {e}", exc_info=True)
             metadata_result['summary'] = None
         
-        # Générer le score de satisfaction
+        # Générer le score de satisfaction avec mesure du temps
+        satisfaction_time = 0.0
         try:
             logger.info(f"[{transcription_id}] 📊 Generating satisfaction score...")
+            satisfaction_start = time.time()
             satisfaction_response = enrichment_service.generate_metadata(enriched_text, "satisfaction", final_prompts, max_tokens=100)
+            satisfaction_time = round(time.time() - satisfaction_start, 2)
             # Parser le JSON
             if satisfaction_response and satisfaction_response.strip():
                 try:
@@ -976,10 +1020,13 @@ def aggregate_enrichment_chunks_task(self, transcription_id: str):
             logger.warning(f"[{transcription_id}] ⚠️ Failed to generate satisfaction score: {e}", exc_info=True)
             metadata_result['satisfaction'] = None
         
-        # Générer les bullet points
+        # Générer les bullet points avec mesure du temps
+        bullet_points_time = 0.0
         try:
             logger.info(f"[{transcription_id}] 📊 Generating bullet points...")
+            bullet_start = time.time()
             bullet_response = enrichment_service.generate_metadata(enriched_text, "bullet_points", final_prompts, max_tokens=200)
+            bullet_points_time = round(time.time() - bullet_start, 2)
             # Parser le JSON
             if bullet_response and bullet_response.strip():
                 try:
@@ -1006,6 +1053,24 @@ def aggregate_enrichment_chunks_task(self, transcription_id: str):
         }
         logger.info(f"[{transcription_id}] 📊 Metadata summary: title={metadata_result.get('title') is not None}, summary={metadata_result.get('summary') is not None}, satisfaction={metadata_result.get('satisfaction') is not None}, bullet_points={metadata_result.get('bullet_points') is not None}")
         
+        # Construire enrichment_data au format de enrich_transcription (avec les temps individuels)
+        satisfaction_score = metadata_result.get('satisfaction', {}).get('score') if isinstance(metadata_result.get('satisfaction'), dict) else None
+        bullet_points_list = metadata_result.get('bullet_points', {}).get('points', []) if isinstance(metadata_result.get('bullet_points'), dict) else []
+        
+        enrichment_data = {
+            "title": metadata_result.get('title'),
+            "summary": metadata_result.get('summary'),
+            "satisfaction_score": satisfaction_score,
+            "bullet_points": bullet_points_list[:4] if bullet_points_list else [],  # Limiter à 4 points maximum
+            "timing": {
+                "title_time": title_time,
+                "summary_time": summary_time,
+                "satisfaction_time": satisfaction_time,
+                "bullet_points_time": bullet_points_time,
+                "total_time": metadata_time
+            }
+        }
+        
         # Sauvegarder le résultat final
         api_client = get_api_client()
         aggregation_time = round(time.time() - start_time, 2)
@@ -1020,7 +1085,8 @@ def aggregate_enrichment_chunks_task(self, transcription_id: str):
             "enrichment_status": "done",
             "enriched_segments": json.dumps(all_enriched_segments),
             "enrichment_processing_time": total_processing_time,
-            "enhanced_text": json.dumps(enhanced_data, ensure_ascii=False)  # Toujours sauvegarder les métadonnées
+            "enhanced_text": json.dumps(enhanced_data, ensure_ascii=False),  # Toujours sauvegarder les métadonnées
+            "enrichment_data": json.dumps(enrichment_data, ensure_ascii=False)  # Format enrich_transcription avec les temps
         }
         
         # Ajouter enriched_text si text_correction=true
