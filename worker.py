@@ -213,31 +213,31 @@ def enrich_transcription_task(self, transcription_id: str, use_distributed: bool
     """
     api_client = get_api_client()
     
-        # 1. Récupérer les informations de la transcription depuis l'API
-        logger.info(f"[{transcription_id}] 📡 Fetching transcription data from API...")
+    # 1. Récupérer les informations de la transcription depuis l'API
+    logger.info(f"[{transcription_id}] 📡 Fetching transcription data from API...")
     transcription = api_client.get_transcription(transcription_id)
-        
-        if not transcription:
-            raise ValueError(f"Transcription {transcription_id} not found")
-        
+    
+    if not transcription:
+        raise ValueError(f"Transcription {transcription_id} not found")
+    
     # Loguer les prompts AU DÉBUT de la tâche
     logger.info(f"[{transcription_id}] 📝 PROMPTS | ========== DÉBUT TÂCHE D'ENRICHISSEMENT ==========")
-        
+    
     # Récupérer les prompts personnalisés si fournis
-        enrichment_prompts = None
+    enrichment_prompts = None
     enrichment_prompts_str = transcription.get('enrichment_prompts')
-        if enrichment_prompts_str:
-            try:
-                if isinstance(enrichment_prompts_str, str):
-                    enrichment_prompts = json.loads(enrichment_prompts_str)
+    if enrichment_prompts_str:
+        try:
+            if isinstance(enrichment_prompts_str, str):
+                enrichment_prompts = json.loads(enrichment_prompts_str)
             else:
-                    enrichment_prompts = enrichment_prompts_str
+                enrichment_prompts = enrichment_prompts_str
             logger.info(f"[{transcription_id}] 📝 PROMPTS | Reçus depuis l'interface: {list(enrichment_prompts.keys())}")
             for key, value in enrichment_prompts.items():
                 logger.info(f"[{transcription_id}] 📝 PROMPTS | '{key}': {value[:100]}..." if len(value) > 100 else f"[{transcription_id}] 📝 PROMPTS | '{key}': {value}")
         except Exception as e:
             logger.warning(f"[{transcription_id}] ⚠️ Failed to parse enrichment_prompts: {e}, using default")
-                enrichment_prompts = None
+            enrichment_prompts = None
         
     # Loguer les prompts par défaut qui seront utilisés
     from enrichment_service import DEFAULT_ENRICHMENT_PROMPTS
