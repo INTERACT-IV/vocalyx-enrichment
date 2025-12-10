@@ -386,14 +386,19 @@ def enrich_transcription_task(self, transcription_id: str, use_distributed: bool
             
             # Utiliser chord pour lancer les 4 tâches en parallèle puis appeler la callback
             logger.info(f"[{transcription_id}] 🚀 Launching 4 parallel metadata generation tasks (title, summary, satisfaction, bullet_points) with chord...")
+            from celery import current_app as celery_current_app
+            
+            # Créer le groupe avec spécification explicite de la queue pour chaque tâche
+            metadata_group = group(
+                generate_title_metadata_task.s(transcription_id, text_for_metadata, final_prompts, llm_model).set(queue='enrichment'),
+                generate_summary_metadata_task.s(transcription_id, text_for_metadata, final_prompts, llm_model).set(queue='enrichment'),
+                generate_satisfaction_metadata_task.s(transcription_id, text_for_metadata, final_prompts, llm_model).set(queue='enrichment'),
+                generate_bullet_points_metadata_task.s(transcription_id, text_for_metadata, final_prompts, llm_model).set(queue='enrichment')
+            )
+            
             metadata_chord = chord(
-                group(
-                    generate_title_metadata_task.s(transcription_id, text_for_metadata, final_prompts, llm_model),
-                    generate_summary_metadata_task.s(transcription_id, text_for_metadata, final_prompts, llm_model),
-                    generate_satisfaction_metadata_task.s(transcription_id, text_for_metadata, final_prompts, llm_model),
-                    generate_bullet_points_metadata_task.s(transcription_id, text_for_metadata, final_prompts, llm_model)
-                ),
-                finalize_classic_metadata_task.s(transcription_id, corrected_segments, corrected_text, text_correction, start_time)
+                metadata_group,
+                finalize_classic_metadata_task.s(transcription_id, corrected_segments, corrected_text, text_correction, start_time).set(queue='enrichment')
             )
             
             # Lancer le chord de manière asynchrone
@@ -1327,14 +1332,19 @@ def aggregate_enrichment_chunks_task(self, transcription_id: str):
         
         # Utiliser chord pour lancer les 4 tâches en parallèle puis appeler la callback
         logger.info(f"[{transcription_id}] 🚀 Launching 4 parallel metadata generation tasks (title, summary, satisfaction, bullet_points) with chord...")
+        from celery import current_app as celery_current_app
+        
+        # Créer le groupe avec spécification explicite de la queue pour chaque tâche
+        metadata_group = group(
+            generate_title_metadata_task.s(transcription_id, enriched_text, final_prompts, llm_model).set(queue='enrichment'),
+            generate_summary_metadata_task.s(transcription_id, enriched_text, final_prompts, llm_model).set(queue='enrichment'),
+            generate_satisfaction_metadata_task.s(transcription_id, enriched_text, final_prompts, llm_model).set(queue='enrichment'),
+            generate_bullet_points_metadata_task.s(transcription_id, enriched_text, final_prompts, llm_model).set(queue='enrichment')
+        )
+        
         metadata_chord = chord(
-            group(
-                generate_title_metadata_task.s(transcription_id, enriched_text, final_prompts, llm_model),
-                generate_summary_metadata_task.s(transcription_id, enriched_text, final_prompts, llm_model),
-                generate_satisfaction_metadata_task.s(transcription_id, enriched_text, final_prompts, llm_model),
-                generate_bullet_points_metadata_task.s(transcription_id, enriched_text, final_prompts, llm_model)
-            ),
-            finalize_metadata_aggregation_task.s(transcription_id)
+            metadata_group,
+            finalize_metadata_aggregation_task.s(transcription_id).set(queue='enrichment')
         )
         
         # Lancer le chord de manière asynchrone
