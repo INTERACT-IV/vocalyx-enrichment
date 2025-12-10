@@ -479,7 +479,8 @@ def enrich_transcription_task(self, transcription_id: str, use_distributed: bool
             # 4. Bullet points
             try:
                 start = time.time()
-                response = enrichment_service.generate_metadata(text_for_metadata, "bullet_points", final_prompts, max_tokens=200)
+                # response = enrichment_service.generate_metadata(text_for_metadata, "bullet_points", final_prompts, max_tokens=200)
+                response = None
                 bullet_points_time = round(time.time() - start, 2)
                 bullet_points = None
                 if response and response.strip():
@@ -509,13 +510,13 @@ def enrich_transcription_task(self, transcription_id: str, use_distributed: bool
             
             # Construire enrichment_data au format de enrich_transcription (avec les temps individuels)
             satisfaction_score = metadata.get('satisfaction', {}).get('score') if isinstance(metadata.get('satisfaction'), dict) else None
-            bullet_points_list = metadata.get('bullet_points', {}).get('points', []) if isinstance(metadata.get('bullet_points'), dict) else []
+            #bullet_points_list = metadata.get('bullet_points', {}).get('points', []) if isinstance(metadata.get('bullet_points'), dict) else []
             
             enrichment_data = {
                 "title": metadata.get('title'),
                 "summary": metadata.get('summary'),
                 "satisfaction_score": satisfaction_score,
-                "bullet_points": bullet_points_list[:4] if bullet_points_list else [],  # Limiter à 4 points maximum
+                "bullet_points": [],#bullet_points_list[:4] if bullet_points_list else [],  # Limiter à 4 points maximum
                 "timing": {
                     "title_time": title_time,
                     "summary_time": summary_time,
