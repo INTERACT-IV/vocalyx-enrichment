@@ -68,7 +68,7 @@ def on_worker_init(**kwargs):
             try:
                 get_llm_service(config.llm_model)
                 logger.info("✅ LLM model cache warmed up")
-    except Exception as e:
+            except Exception as e:
                 logger.warning(f"⚠️ Failed to warm up model cache: {e}")
     except Exception as e:
         logger.error(f"Erreur lors de l'initialisation du worker: {e}")
