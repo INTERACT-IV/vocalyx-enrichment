@@ -160,6 +160,37 @@ class LLMModelCache:
         
         del self._cache[oldest_model]
     
+    def list_cached_models(self) -> list:
+        """
+        Liste les modèles actuellement en cache.
+        
+        Returns:
+            Liste des noms de modèles en cache
+        """
+        with self._lock:
+            return list(self._cache.keys())
+    
+    def get_cache_status(self) -> Dict[str, any]:
+        """
+        Retourne le statut du cache (modèles en cache, taille, etc.).
+        
+        Returns:
+            Dictionnaire avec les informations du cache
+        """
+        with self._lock:
+            return {
+                "cached_models": list(self._cache.keys()),
+                "cache_size": len(self._cache),
+                "max_models": self.max_models,
+                "models_info": {
+                    name: {
+                        "last_used": self._cache[name]['last_used'],
+                        "cached_at": time.time() - self._cache[name]['last_used']
+                    }
+                    for name in self._cache.keys()
+                }
+            }
+    
     def clear(self):
         """Vide complètement le cache"""
         with self._lock:

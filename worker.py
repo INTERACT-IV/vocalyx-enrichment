@@ -61,14 +61,41 @@ def on_worker_init(**kwargs):
         
         # Initialiser le cache avec la classe EnrichmentService (évite les problèmes d'import)
         # Le cache sera initialisé dans get_llm_service si nécessaire
-        # Pré-charger le modèle par défaut (warm-up)
+        # Pré-charger les modèles (warm-up)
         if config.enable_cache:
             logger.info("🔥 Warming up LLM model cache...")
+            models_to_warm = ['phi-3-mini', 'mistral-7b-instruct']
+            loaded_models = []
+            failed_models = []
+            
+            for model_name in models_to_warm:
+                try:
+                    logger.info(f"🚀 Loading LLM model into cache: {model_name}...")
+                    get_llm_service(model_name)
+                    loaded_models.append(model_name)
+                    logger.info(f"✅ Model {model_name} loaded and cached successfully")
+                except Exception as e:
+                    logger.warning(f"⚠️ Failed to warm up model {model_name}: {e}")
+                    failed_models.append(model_name)
+            
+            # Afficher le statut du cache après le warm-up
             try:
-                get_llm_service(config.llm_model)
-                logger.info("✅ LLM model cache warmed up")
+                global _model_cache
+                if _model_cache is not None:
+                    cache_status = _model_cache.get_cache_status()
+                    cached_models = cache_status.get('cached_models', [])
+                    logger.info(f"📦 LLM model cache status: {len(cached_models)}/{cache_status.get('max_models', 2)} models cached")
+                    if cached_models:
+                        logger.info(f"✅ Cached models: {', '.join(cached_models)}")
+                    if loaded_models:
+                        logger.info(f"✅ Successfully loaded: {', '.join(loaded_models)}")
+                    if failed_models:
+                        logger.warning(f"⚠️ Failed to load: {', '.join(failed_models)}")
+                    logger.info("✅ LLM model cache warmed up")
+                else:
+                    logger.warning("⚠️ Model cache not initialized")
             except Exception as e:
-                logger.warning(f"⚠️ Failed to warm up model cache: {e}")
+                logger.warning(f"⚠️ Failed to get cache status: {e}")
     except Exception as e:
         logger.error(f"Erreur lors de l'initialisation du worker: {e}")
 
@@ -136,7 +163,19 @@ def get_llm_service(model_name: str = None):
     if model_name is None:
         model_name = config.llm_model
     
-    return _model_cache.get(model_name, config)
+    # Récupérer le service depuis le cache
+    service = _model_cache.get(model_name, config)
+    
+    # Logger le statut du cache après chaque utilisation (niveau debug pour éviter trop de logs)
+    try:
+        cache_status = _model_cache.get_cache_status()
+        cached_models = cache_status.get('cached_models', [])
+        if cached_models:
+            logger.debug(f"📦 LLM cache status: {len(cached_models)}/{cache_status.get('max_models', 2)} models cached - {', '.join(cached_models)}")
+    except Exception as e:
+        logger.debug(f"⚠️ Failed to get cache status: {e}")
+    
+    return service
 
 
 # Créer l'application Celery
