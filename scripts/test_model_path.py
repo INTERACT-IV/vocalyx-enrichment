@@ -17,12 +17,12 @@ test_dirs = [
     './models/enrichment',
 ]
 
-print("🔍 Test de détection du modèle phi-3-mini\n")
+print("🔍 Test de détection du modèle qwen2.5-7b-instruct\n")
 
 for test_dir in test_dirs:
     print(f"📁 Test avec répertoire: {test_dir}")
     manager = ModelManager(models_dir=test_dir)
-    model_path = manager.get_model_path('phi-3-mini')
+    model_path = manager.get_model_path('qwen2.5-7b-instruct')
     print(f"   Chemin résolu: {model_path}")
     print(f"   Existe: {'✅' if model_path.exists() else '❌'}")
     if model_path.exists():

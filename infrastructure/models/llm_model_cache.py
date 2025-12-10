@@ -108,9 +108,16 @@ class LLMModelCache:
     def _normalize_model_name(self, model_name: str) -> str:
         """Normalise le nom du modèle"""
         if not model_name:
-            return 'phi-3-mini'  # Modèle par défaut
+            return 'qwen2.5-7b-instruct'  # Modèle par défaut
         
         model_name = model_name.lower()
+        
+        # Liste des modèles recommandés (doit correspondre à ModelManager.RECOMMENDED_MODELS)
+        known_models = [
+            'qwen2.5-7b-instruct',
+            'mistral-7b-instruct',
+            'phi-3-mini'
+        ]
         
         # Mapper les anciens noms vers les nouveaux noms
         if 'mistral-7b' in model_name and 'instruct' not in model_name:
@@ -121,20 +128,38 @@ class LLMModelCache:
             parts = model_name.replace('\\', '/').split('/')
             # Chercher le nom du modèle dans le chemin
             for part in reversed(parts):
+                # Normaliser mistral-7b vers mistral-7b-instruct
                 if 'mistral-7b' in part and 'instruct' not in part:
                     return 'mistral-7b-instruct'
-                elif any(m in part for m in ['phi-3', 'mistral', 'llama', 'gemma']):
-                    # Normaliser mistral-7b vers mistral-7b-instruct
-                    if 'mistral-7b' in part and 'instruct' not in part:
-                        return 'mistral-7b-instruct'
-                    return part
-            return parts[-1] if parts else 'phi-3-mini'
+                # Chercher les modèles connus
+                for known in known_models:
+                    # Vérifier si le nom du modèle est dans cette partie du chemin
+                    known_clean = known.replace('-', '').replace('_', '').replace('.', '')
+                    part_clean = part.replace('-', '').replace('_', '').replace('.', '')
+                    if known_clean in part_clean or part_clean in known_clean:
+                        return known
+            return parts[-1] if parts else 'qwen2.5-7b-instruct'
         
-        # Noms de modèles connus
-        known_models = ['phi-3-mini', 'mistral-7b-instruct']
+        # Chercher les modèles connus dans le nom
         for known in known_models:
-            if known in model_name:
+            # Correspondance flexible (supporte variations avec/sans tirets, underscores)
+            known_clean = known.replace('-', '').replace('_', '').replace('.', '')
+            model_clean = model_name.replace('-', '').replace('_', '').replace('.', '')
+            if known_clean in model_clean or model_clean in known_clean:
                 return known
+        
+        # Mappings spécifiques pour variations communes
+        if 'qwen' in model_name:
+            if '2.5' in model_name or '25' in model_name or '7b' in model_name:
+                return 'qwen2.5-7b-instruct'
+        
+        if 'phi3' in model_name or 'phi-3' in model_name:
+            if 'mini' in model_name or '3.8' in model_name:
+                return 'phi-3-mini'
+        
+        if 'mistral' in model_name:
+            if '7b' in model_name or '7' in model_name:
+                return 'mistral-7b-instruct'
         
         # Si on trouve mistral-7b sans instruct, le mapper vers mistral-7b-instruct
         if 'mistral-7b' in model_name and 'instruct' not in model_name:

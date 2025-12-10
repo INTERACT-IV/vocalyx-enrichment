@@ -15,19 +15,31 @@ class ModelManager:
     """Gère le téléchargement et la gestion des modèles GGUF"""
     
     # Modèles recommandés pour CPU (quantisés GGUF)
-    # Triés du plus léger au plus lourd
+    # Triés par ordre de préférence (défaut en premier)
     RECOMMENDED_MODELS = {
-        'phi-3-mini': {
-            'repo_id': 'microsoft/Phi-3-mini-4k-instruct-gguf',
-            'filename': 'Phi-3-mini-4k-instruct-q4.gguf',  # Nom du fichier local (correspond au fichier dans shared/)
-            'size_gb': 2.3,
-            'description': 'Phi-3 Mini 3.8B Q4 - Léger et rapide, idéal pour CPU (défaut)'
+        'qwen2.5-7b-instruct': {
+            'repo_id': 'Qwen/Qwen2.5-7B-Instruct-GGUF',
+            'filename': 'qwen2.5-7b-instruct-q4_K_M.gguf',
+            'size_gb': 4.1,
+            'description': 'Qwen 2.5 7B Instruct Q4 - Excellent pour français, performance similaire à Mistral (défaut)',
+            'speed_vs_mistral': '1-1.1x (similaire)',
+            'quality_vs_mistral': 'Meilleur pour français'
         },
         'mistral-7b-instruct': {
             'repo_id': 'TheBloke/Mistral-7B-Instruct-v0.3-GGUF',
             'filename': 'Mistral-7B-Instruct-v0.3-Q4_K_M.gguf',
             'size_gb': 4.1,
-            'description': 'Mistral 7B Instruct v0.3 - Bon équilibre qualité/vitesse'
+            'description': 'Mistral 7B Instruct v0.3 - Bon équilibre qualité/vitesse',
+            'speed_vs_mistral': '1x (référence)',
+            'quality_vs_mistral': 'Référence'
+        },
+        'phi-3-mini': {
+            'repo_id': 'microsoft/Phi-3-mini-4k-instruct-gguf',
+            'filename': 'Phi-3-mini-4k-instruct-q4.gguf',
+            'size_gb': 2.3,
+            'description': 'Phi-3 Mini 3.8B Q4 - Léger et rapide, idéal pour CPU',
+            'speed_vs_mistral': '2-3x plus rapide',
+            'quality_vs_mistral': 'Légèrement inférieur'
         }
     }
     
@@ -132,10 +144,15 @@ class ModelManager:
                     
                     # Essayer avec des variations du nom de fichier
                     # Chercher tous les fichiers .gguf qui contiennent le nom du modèle
+                    model_lower = model_name.lower()
                     model_search_terms = [
-                        model_name.lower().replace('-', '').replace('_', ''),
-                        'phi3' if 'phi-3' in model_name.lower() else model_name.lower(),
+                        model_lower.replace('-', '').replace('_', '').replace('.', ''),
+                        'phi3' if 'phi-3' in model_lower else model_lower,
+                        'llama3' if 'llama-3' in model_lower else None,
+                        'qwen25' if 'qwen2.5' in model_lower or 'qwen2' in model_lower else None,
                     ]
+                    # Filtrer les None
+                    model_search_terms = [t for t in model_search_terms if t]
                     
                     for gguf_file in search_dir.glob('*.gguf'):
                         file_lower = gguf_file.name.lower()

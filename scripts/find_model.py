@@ -21,8 +21,8 @@ def main():
         'model_name',
         type=str,
         nargs='?',
-        default='phi-3-mini',
-        help='Nom du modèle à chercher (défaut: phi-3-mini)'
+        default='qwen2.5-7b-instruct',
+        help='Nom du modèle à chercher (défaut: qwen2.5-7b-instruct)'
     )
     parser.add_argument(
         '--models-dir',

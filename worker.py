@@ -64,7 +64,7 @@ def on_worker_init(**kwargs):
         # Pré-charger les modèles (warm-up)
         if config.enable_cache:
             logger.info("🔥 Warming up LLM model cache...")
-            models_to_warm = ['phi-3-mini', 'mistral-7b-instruct']
+            models_to_warm = ['qwen2.5-7b-instruct', 'mistral-7b-instruct', 'phi-3-mini']
             loaded_models = []
             failed_models = []
             

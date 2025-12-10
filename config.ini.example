@@ -43,11 +43,12 @@ default_ttl = 3600
 # Modèle LLM à utiliser (fichier .gguf ou nom de modèle recommandé)
 # 
 # MODÈLES DISPONIBLES:
-#   - phi-3-mini: 2.3 GB - Léger et rapide, idéal pour CPU (défaut recommandé)
+#   - qwen2.5-7b-instruct: 4.1 GB - Excellent pour français, performance similaire à Mistral (défaut)
 #   - mistral-7b-instruct: 4.1 GB - Bon équilibre qualité/vitesse
+#   - phi-3-mini: 2.3 GB - Léger et rapide, idéal pour CPU
 #
 # Le modèle sera cherché dans shared/models/enrichment/ puis téléchargé si absent
-model = phi-3-mini
+model = qwen2.5-7b-instruct
 
 # Répertoire des modèles (par défaut: shared/models/enrichment pour structure vocalyx-all)
 # models_dir = ./shared/models/enrichment

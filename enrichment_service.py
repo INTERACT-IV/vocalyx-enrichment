@@ -39,7 +39,7 @@ class EnrichmentService:
             device: Device à utiliser ("cpu" uniquement pour GGUF)
         """
         self.config = config
-        self.model_name = model_name or (getattr(config, 'llm_model', 'phi-3-mini') if config else 'phi-3-mini')
+        self.model_name = model_name or (getattr(config, 'llm_model', 'qwen2.5-7b-instruct') if config else 'qwen2.5-7b-instruct')
         self.device = device or (getattr(config, 'llm_device', 'cpu') if config else 'cpu')
         
         # Gestionnaire de modèles
@@ -150,6 +150,12 @@ class EnrichmentService:
                     stop_tokens = ["<|end|>", "<|user|>", "<|system|>", "<|assistant|>", "\n\n\n"]
                 elif 'mistral' in model_lower:
                     stop_tokens = ["</s>", "[INST]", "[/INST]", "\n\n\n"]
+                elif 'llama-3' in model_lower or 'llama3' in model_lower:
+                    stop_tokens = ["<|eot_id|>", "<|end_of_text|>", "\n\n\n"]
+                elif 'qwen' in model_lower:
+                    stop_tokens = ["<|im_end|>", "<|endoftext|>", "\n\n\n"]
+                elif 'gemma' in model_lower:
+                    stop_tokens = ["<end_of_text>", "<eos>", "\n\n\n"]
                 else:
                     stop_tokens = ["</s>", "<|im_end|>", "<|im_start|>", "\n\n\n"]
             
@@ -161,6 +167,16 @@ class EnrichmentService:
                 # Format Mistral : [INST] prompt [/INST]
                 # Note: llama-cpp-python ajoute automatiquement <s> au début, ne pas l'inclure
                 formatted_prompt = f"[INST] {prompt} [/INST]"
+            elif 'llama-3' in model_lower or 'llama3' in model_lower:
+                # Format Llama 3 : <|begin_of_text|><|start_header_id|>user<|end_header_id|>\n\n{prompt}<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n
+                # Version simplifiée pour llama-cpp-python
+                formatted_prompt = f"<|begin_of_text|><|start_header_id|>user<|end_header_id|>\n\n{prompt}<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n"
+            elif 'qwen' in model_lower:
+                # Format Qwen : <|im_start|>user\n{prompt}<|im_end|>\n<|im_start|>assistant\n
+                formatted_prompt = f"<|im_start|>user\n{prompt}<|im_end|>\n<|im_start|>assistant\n"
+            elif 'gemma' in model_lower:
+                # Format Gemma : <start_of_turn>user\n{prompt}<end_of_turn>\n<start_of_turn>model\n
+                formatted_prompt = f"<start_of_turn>user\n{prompt}<end_of_turn>\n<start_of_turn>model\n"
             else:
                 formatted_prompt = prompt
             
