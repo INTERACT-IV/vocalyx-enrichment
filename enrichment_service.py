@@ -60,7 +60,6 @@ class EnrichmentService:
         
         self.model_path = None
         self.llm = None
-        self._lock = threading.Lock()  # Verrou pour protéger les appels au modèle LLM (non thread-safe)
         
         logger.info(
             f"🎯 EnrichmentService initialized | "
