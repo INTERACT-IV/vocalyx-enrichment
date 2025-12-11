@@ -382,8 +382,8 @@ def enrich_transcription_task(self, transcription_id: str, use_distributed: bool
         })
         logger.info(f"[{transcription_id}] ⚙️ Status updated to 'processing'")
         
-        # Obtenir le service d'enrichissement avec cache
-        llm_model = transcription.get('llm_model', config.llm_model)
+        # Obtenir le service d'enrichissement avec cache (utiliser la valeur par défaut si None ou absent)
+        llm_model = transcription.get('llm_model') or config.llm_model
         logger.info(f"[{transcription_id}] 🎤 Getting enrichment service with model: {llm_model} (cached)")
         enrichment_service = get_llm_service(model_name=llm_model)
         
@@ -420,8 +420,8 @@ def enrich_transcription_task(self, transcription_id: str, use_distributed: bool
             if enrichment_prompts:
                 final_prompts.update(enrichment_prompts)
             
-            # Obtenir le modèle LLM
-            llm_model = transcription.get('llm_model', config.llm_model)
+            # Obtenir le modèle LLM (utiliser la valeur par défaut si None ou absent)
+            llm_model = transcription.get('llm_model') or config.llm_model
             enrichment_service = get_llm_service(model_name=llm_model)
             
             # Générer les métadonnées de manière séquentielle
@@ -680,7 +680,8 @@ def orchestrate_distributed_enrichment_task(self, transcription_id: str):
         redis_manager = get_redis_manager()
         orchestration_start_time = time.time()
         
-        llm_model = transcription.get('llm_model', config.llm_model)
+        # Récupérer le modèle LLM (utiliser la valeur par défaut si None ou absent)
+        llm_model = transcription.get('llm_model') or config.llm_model
         
         # Loguer les prompts AU DÉBUT de l'orchestration
         logger.info(f"[{transcription_id}] 📝 PROMPTS | ========== DÉBUT ORCHESTRATION DISTRIBUÉE ==========")
@@ -832,7 +833,8 @@ def enrich_chunk_task(self, transcription_id: str, chunk_index: int, total_chunk
             raise ValueError(f"Chunk {chunk_index} not found in metadata")
         
         chunk = chunks[chunk_index]
-        llm_model = metadata.get('llm_model', config.llm_model)
+        # Récupérer le modèle LLM (utiliser la valeur par défaut si None ou absent)
+        llm_model = metadata.get('llm_model') or config.llm_model
         
         logger.info(
             f"[{transcription_id}] ⚙️ DISTRIBUTED CHUNK | Worker {config.instance_name} processing | "
@@ -1004,8 +1006,8 @@ def aggregate_enrichment_chunks_task(self, transcription_id: str):
         if enrichment_prompts:
             final_prompts.update(enrichment_prompts)
         
-        # Obtenir le modèle LLM
-        llm_model = metadata.get('llm_model', config.llm_model)
+        # Obtenir le modèle LLM (utiliser la valeur par défaut si None ou absent)
+        llm_model = metadata.get('llm_model') or config.llm_model
         enrichment_service = get_llm_service(model_name=llm_model)
         
         # Générer les métadonnées de manière séquentielle
