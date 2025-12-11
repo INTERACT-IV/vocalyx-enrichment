@@ -530,13 +530,21 @@ def enrich_transcription_task(self, transcription_id: str, use_distributed: bool
             enrichment_data = None
             logger.warning(f"[{transcription_id}] ⚠️ Enrichment not requested, enhanced_text will be null")
         
+        # Construire les prompts finaux pour sauvegarde (fusion des prompts par défaut et personnalisés)
+        from enrichment_service import DEFAULT_ENRICHMENT_PROMPTS
+        final_prompts_for_save = DEFAULT_ENRICHMENT_PROMPTS.copy()
+        if enrichment_prompts:
+            final_prompts_for_save.update(enrichment_prompts)
+        
         # Mettre à jour avec les résultats
         logger.info(f"[{transcription_id}] 💾 Saving results to API...")
         update_data = {
             "status": "done",  # Mettre à jour le statut principal (comme transcription)
             "enrichment_status": "done",
             "enriched_segments": json.dumps(corrected_segments),
-            "enrichment_processing_time": processing_time
+            "enrichment_processing_time": processing_time,
+            "llm_model": llm_model,  # Sauvegarder le modèle LLM utilisé
+            "enrichment_prompts": json.dumps(final_prompts_for_save, ensure_ascii=False)  # Sauvegarder les prompts finaux utilisés
         }
         
         # Ajouter enhanced_text si enrichment_requested=true (même si toutes les métadonnées sont None)
@@ -567,12 +575,16 @@ def enrich_transcription_task(self, transcription_id: str, use_distributed: bool
     except Exception as e:
         logger.error(f"[{transcription_id}] ❌ Error: {e}", exc_info=True)
         
+        # Calculer le temps de traitement même en cas d'erreur
+        error_processing_time = round(time.time() - start_time, 2)
+        
         # Mettre à jour le statut à "error"
         try:
             api_client_on_error = get_api_client()
             api_client_on_error.update_transcription(transcription_id, {
                 "enrichment_status": "error",
-                "enrichment_error_message": str(e)
+                "enrichment_error_message": str(e),
+                "enrichment_processing_time": error_processing_time  # Sauvegarder le temps même en cas d'erreur
             })
         except Exception as update_error:
             logger.error(f"[{transcription_id}] Failed to update error status: {update_error}")
@@ -1108,13 +1120,22 @@ def aggregate_enrichment_chunks_task(self, transcription_id: str):
         else:
             total_processing_time = round(max_chunk_time + aggregation_time, 2)
         
+        # Construire les prompts finaux pour sauvegarde (fusion des prompts par défaut et personnalisés)
+        from enrichment_service import DEFAULT_ENRICHMENT_PROMPTS
+        final_prompts_for_save = DEFAULT_ENRICHMENT_PROMPTS.copy()
+        enrichment_prompts_from_metadata = metadata.get('enrichment_prompts')
+        if enrichment_prompts_from_metadata:
+            final_prompts_for_save.update(enrichment_prompts_from_metadata)
+        
         update_data = {
             "status": "done",
             "enrichment_status": "done",
             "enriched_segments": json.dumps(all_enriched_segments),
             "enrichment_processing_time": total_processing_time,
             "enhanced_text": json.dumps(enhanced_data, ensure_ascii=False),
-            "enrichment_data": json.dumps(enrichment_data, ensure_ascii=False)
+            "enrichment_data": json.dumps(enrichment_data, ensure_ascii=False),
+            "llm_model": llm_model,  # Sauvegarder le modèle LLM utilisé
+            "enrichment_prompts": json.dumps(final_prompts_for_save, ensure_ascii=False)  # Sauvegarder les prompts finaux utilisés
         }
         
         # Ajouter enriched_text si text_correction=true
@@ -1156,10 +1177,17 @@ def aggregate_enrichment_chunks_task(self, transcription_id: str):
     except Exception as e:
         logger.error(f"[{transcription_id}] ❌ Aggregation error: {e}", exc_info=True)
         try:
+            # Calculer le temps de traitement même en cas d'erreur
+            error_processing_time = round(time.time() - start_time, 2)
+            # Si on a une orchestration_start_time, utiliser celle-ci pour un temps plus précis
+            if 'orchestration_start_time' in locals() and orchestration_start_time:
+                error_processing_time = round(time.time() - orchestration_start_time, 2)
+            
             api_client = get_api_client()
             api_client.update_transcription(transcription_id, {
                 "enrichment_status": "error",
-                "enrichment_error_message": f"Aggregation failed: {str(e)}"
+                "enrichment_error_message": f"Aggregation failed: {str(e)}",
+                "enrichment_processing_time": error_processing_time  # Sauvegarder le temps même en cas d'erreur
             })
         except:
             pass
