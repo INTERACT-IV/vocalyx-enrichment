@@ -1033,8 +1033,14 @@ def aggregate_enrichment_chunks_task(self, transcription_id: str):
                 # On ignore pour l'instant bullet_points côté worker (comportement historique: désactivé)
                 metadata_result["bullet_points"] = None
 
-                # On mappe le temps global sur satisfaction_time (par convention) et metadata_time
-                satisfaction_time = single_time
+                # Répartition cohérente du temps : un seul appel LLM pour 3 champs,
+                # on répartit le temps global de manière égale entre titre / résumé / satisfaction.
+                per_field_time = round(single_time / 3.0, 2) if single_time > 0 else 0.0
+                title_time = per_field_time
+                summary_time = per_field_time
+                satisfaction_time = per_field_time
+                bullet_points_time = 0.0
+
                 metadata_time = round(time.time() - metadata_start_time, 2)
 
                 logger.info(
