@@ -61,7 +61,9 @@ class Config:
             'top_k': '40',
             'n_threads': '0',
             'n_ctx': '2048',
-            'n_batch': '512'
+            'n_batch': '512',
+            # Active le prompt cache de llama-cpp-python (réutilisation des préfixes de prompts)
+            'enable_prompt_cache': 'true',
         }
         
         config['PERFORMANCE'] = {
@@ -194,6 +196,12 @@ class Config:
             'LLM_N_BATCH',
             self.config.get('LLM', 'n_batch', fallback='512')
         ))
+        # Prompt cache (llama-cpp-python)
+        llm_enable_prompt_cache_str = os.environ.get(
+            'LLM_ENABLE_PROMPT_CACHE',
+            self.config.get('LLM', 'enable_prompt_cache', fallback='true')
+        )
+        self.llm_enable_prompt_cache = llm_enable_prompt_cache_str.lower() in ['true', '1', 't']
         
         # PERFORMANCE
         self.max_workers = int(os.environ.get(

@@ -92,6 +92,12 @@ n_ctx = 2048
 # Recommandé: 512 pour CPU
 n_batch = 512
 
+# Activer le prompt cache de llama-cpp-python
+# true: le modèle réutilise les préfixes de prompts similaires (règles, contexte),
+#       ce qui accélère fortement les appels répétés avec des prompts quasi identiques.
+# false: désactive le cache de contexte.
+enable_prompt_cache = true
+
 [PERFORMANCE]
 # Nombre de workers Celery (concurrence)
 # Recommandé: entre 1 et 4 selon votre CPU

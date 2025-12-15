@@ -11,18 +11,13 @@ from pathlib import Path
 from llama_cpp import Llama
 
 from infrastructure.models.model_manager import ModelManager
+from application.prompts import (
+    DEFAULT_ENRICHMENT_PROMPTS,
+    SEGMENT_CORRECTION_BASE_PROMPT,
+    SEGMENT_CORRECTION_TASK_PROMPT,
+)
 
 logger = logging.getLogger("vocalyx.enrichment")
-
-# Prompts par défaut pour l'enrichissement (optimisés pour performance CPU)
-# Contexte: Les transcriptions proviennent toujours d'un call center/support client (appelant vers agent)
-# Optimisation: Prompts réduits de ~60% pour réduire le temps de traitement LLM
-DEFAULT_ENRICHMENT_PROMPTS = {
-    "title": "Appel client-agent. Génère un titre court (max 10 mots) en français:",
-    "summary": "Appel client-agent. Génère un résumé concis (max 50 mots) en français:",
-    "satisfaction": "Appel client-agent. Score satisfaction du point de vue client de 1-10. JSON: {\"score\": nombre}.",
-    "bullet_points": "Appel client-agent. Points clés en puces. JSON: {\"points\": [...]}. Réponds en français."
-}
 
 
 class EnrichmentService:
@@ -62,6 +57,8 @@ class EnrichmentService:
         
         self.model_path = None
         self.llm = None
+        # Cache de contexte / prompt cache (pour réutiliser les préfixes invariants)
+        self.enable_prompt_cache = getattr(config, "llm_enable_prompt_cache", True) if config else True
         
         logger.info(
             f"🎯 EnrichmentService initialized | "
@@ -167,16 +164,26 @@ class EnrichmentService:
             
             # Charger le modèle GGUF avec llama-cpp-python
             try:
-                self.llm = Llama(
-                    model_path=model_path_str,
-                    n_ctx=self.n_ctx,
-                    n_threads=self.n_threads,
-                    n_batch=self.n_batch,
-                    n_gpu_layers=0,  # CPU only
-                    verbose=False,
-                    use_mmap=True,
-                    use_mlock=False
-                )
+                llama_kwargs = {
+                    "model_path": model_path_str,
+                    "n_ctx": self.n_ctx,
+                    "n_threads": self.n_threads,
+                    "n_batch": self.n_batch,
+                    "n_gpu_layers": 0,  # CPU only
+                    "verbose": False,
+                    "use_mmap": True,
+                    "use_mlock": False,
+                }
+
+                # Activer le prompt cache si disponible dans cette version de llama-cpp-python.
+                # Le cache permet de réutiliser les préfixes communs des prompts (règles, contexte),
+                # ce qui réduit le temps de génération pour des prompts très similaires.
+                if self.enable_prompt_cache:
+                    # Certains environnements utilisent 'cache' / 'cache_type' (RAM).
+                    llama_kwargs["cache"] = True
+                    llama_kwargs["cache_type"] = "ram"
+
+                self.llm = Llama(**llama_kwargs)
             except (ValueError, RuntimeError, OSError) as e:
                 # Améliorer le message d'erreur pour les problèmes de chargement
                 import llama_cpp
@@ -549,6 +556,44 @@ class EnrichmentService:
         logger.info("Starting enrichment...")
         enrichment_start_time = time.time()
         
+        # D'abord, tenter un enrichissement "full" en un seul appel LLM
+        try:
+            logger.info("Generating full metadata (single LLM call)...")
+            full_start = time.time()
+            metadata = self.generate_full_metadata(transcription_text, prompts or {})
+            full_time = round(time.time() - full_start, 2)
+
+            if metadata:
+                total_enrichment_time = round(time.time() - enrichment_start_time, 2)
+                logger.info(
+                    f"✅ Enrichment (single call) completed in {total_enrichment_time}s "
+                    f"(llm_call_time: {full_time}s)"
+                )
+
+                # Normaliser la structure de retour
+                title = metadata.get("title") or ""
+                summary = metadata.get("summary") or ""
+                satisfaction_score = metadata.get("satisfaction", {}).get("score", 5)
+                bullet_points = metadata.get("bullet_points") or []
+
+                enrichment_data = {
+                    "title": title,
+                    "summary": summary,
+                    "satisfaction_score": satisfaction_score,
+                    "bullet_points": bullet_points[:4],
+                    "timing": {
+                        "llm_call_time": full_time,
+                        "total_time": total_enrichment_time,
+                    },
+                }
+                return enrichment_data
+        except Exception as e:
+            logger.error(
+                f"❌ Error during single-call metadata enrichment, falling back to multi-call mode: {e}",
+                exc_info=True,
+            )
+
+        # Fallback : comportement historique (4 appels LLM séparés)
         # Utiliser les prompts personnalisés ou les defaults
         title_prompt = prompts.get("title") if prompts and isinstance(prompts, dict) else None
         summary_prompt = prompts.get("summary") if prompts and isinstance(prompts, dict) else None
@@ -556,22 +601,22 @@ class EnrichmentService:
         bullet_points_prompt = prompts.get("bullet_points") if prompts and isinstance(prompts, dict) else None
         
         # Générer tous les éléments avec mesure du temps
-        logger.info("Generating title...")
+        logger.info("Generating title (fallback)...")
         title_start = time.time()
         title = self.generate_title(transcription_text, title_prompt)
         title_time = round(time.time() - title_start, 2)
         
-        logger.info("Generating summary...")
+        logger.info("Generating summary (fallback)...")
         summary_start = time.time()
         summary = self.generate_summary(transcription_text, summary_prompt)
         summary_time = round(time.time() - summary_start, 2)
         
-        logger.info("Generating satisfaction score...")
+        logger.info("Generating satisfaction score (fallback)...")
         satisfaction_start = time.time()
         satisfaction = self.generate_satisfaction_score(transcription_text, satisfaction_prompt)
         satisfaction_time = round(time.time() - satisfaction_start, 2)
         
-        logger.info("Generating bullet points...")
+        logger.info("Generating bullet points (fallback)...")
         bullet_points_start = time.time()
         bullet_points = self.generate_bullet_points(transcription_text, bullet_points_prompt)
         bullet_points_time = round(time.time() - bullet_points_start, 2)
@@ -610,70 +655,230 @@ class EnrichmentService:
         if not segments:
             return []
         
+        # Appel du mode batch par défaut pour optimiser les performances.
+        # Cette méthode est conservée pour la compatibilité avec l'existant.
+        try:
+            return self.enrich_segments_batch(segments)
+        except Exception as e:
+            logger.error(f"❌ Error enriching segments in batch mode, falling back to per-segment mode: {e}", exc_info=True)
+        
+        # Fallback : ancien comportement (traitement segment par segment) en cas de problème avec le batch.
         try:
             self._load_model()
             
             enriched_segments = []
-            previous_text = None
             
-            for i, segment in enumerate(segments):
+            for segment in segments:
                 text = segment.get('text', '').strip()
                 if not text:
                     enriched_segments.append(segment)
                     continue
                 
-                # Construire le prompt pour la correction
-                base_instructions = (
-                    "Tu es un assistant qui CORRIGE et AMÉLIORE des transcriptions audio en français. "
-                    "RÈGLES STRICTES :\n"
-                    "1. Corriger UNIQUEMENT les erreurs d'orthographe et de grammaire\n"
-                    "2. Améliorer UNIQUEMENT la ponctuation (points, virgules, majuscules)\n"
-                    "3. Améliorer UNIQUEMENT la structure (majuscules en début de phrase)\n"
-                    "4. CONSERVER EXACTEMENT le sens original - ne rien ajouter, ne rien inventer\n"
-                    "5. Retourner UNIQUEMENT le texte corrigé, sans explications\n"
-                    "6. La longueur du texte corrigé doit être SIMILAIRE à l'original"
+                prompt = (
+                    f"{SEGMENT_CORRECTION_BASE_PROMPT}\n\n"
+                    f"{SEGMENT_CORRECTION_TASK_PROMPT}\n\n"
+                    f"Texte:\n{text}"
                 )
-                task_instruction = "Corrige et améliore ce texte de transcription en conservant le sens original. Retourne UNIQUEMENT le texte corrigé:"
-                prompt = f"{base_instructions}\n\n{task_instruction}\n\nTexte:\n{text}"
                 
-                # Générer avec température très basse pour être déterministe
                 estimated_tokens = len(text.split())
                 max_tokens_for_text = min(256, max(50, int(estimated_tokens * 1.2)))
                 
                 enriched_text = self._generate_text(
                     prompt,
                     max_tokens=max_tokens_for_text,
-                    temperature=0.05,  # Très bas pour correction
+                    temperature=0.05,
                     stop_tokens=["</s>", "<|end|>", "<|user|>", "<|system|>", "<|assistant|>", "\n\n\n"]
                 )
                 
-                # Vérifier la longueur (détection d'hallucination)
                 if not enriched_text:
                     enriched_text = text
                 else:
                     length_ratio = len(enriched_text) / len(text) if len(text) > 0 else 1.0
                     if length_ratio > 1.5 or length_ratio < 0.5:
                         logger.warning(
-                            f"⚠️ Model generated suspicious output (length mismatch: "
+                            "⚠️ Model generated suspicious output (length mismatch: "
                             f"input={len(text)} chars, output={len(enriched_text)} chars), "
-                            f"returning original text"
+                            "returning original text"
                         )
                         enriched_text = text
                 
-                # Créer le segment enrichi
                 enriched_segment = segment.copy()
-                enriched_segment['enriched_text'] = enriched_text
-                enriched_segment['original_text'] = text
-                
+                enriched_segment["enriched_text"] = enriched_text
+                enriched_segment["original_text"] = text
                 enriched_segments.append(enriched_segment)
-                previous_text = text
             
-            logger.info(f"✅ Enriched {len(enriched_segments)} segments")
+            logger.info(f"✅ Enriched {len(enriched_segments)} segments (fallback per-segment mode)")
             return enriched_segments
-            
         except Exception as e:
-            logger.error(f"❌ Error enriching segments: {e}", exc_info=True)
+            logger.error(f"❌ Error enriching segments in fallback per-segment mode: {e}", exc_info=True)
             return segments
+
+    def enrich_segments_batch(self, segments: List[Dict], batch_size: int = 5) -> List[Dict]:
+        """
+        Enrichit une liste de segments de transcription en mode batch.
+
+        Objectif : réduire le nombre d'appels LLM en traitant plusieurs segments
+        dans un même prompt, avec un format de réponse JSON structuré.
+
+        Args:
+            segments: Liste de segments à enrichir (chacun contient au moins 'text')
+            batch_size: Nombre de segments par batch dans un même appel LLM
+
+        Returns:
+            Liste de segments enrichis, avec les clés 'enriched_text' et 'original_text'
+        """
+        if not segments:
+            return []
+
+        self._load_model()
+
+        enriched_segments: List[Dict] = []
+
+        # Nous allons traiter les segments par paquets pour optimiser le coût du prompt.
+        for batch_start in range(0, len(segments), batch_size):
+            batch = segments[batch_start : batch_start + batch_size]
+
+            # Préparer la liste des entrées à corriger (en gardant les index pour faire le mapping)
+            batch_items = []
+            for idx_in_batch, segment in enumerate(batch):
+                text = segment.get("text", "").strip()
+                if not text:
+                    # Segment vide : on le recopiera tel quel plus bas
+                    continue
+                batch_items.append(
+                    {
+                        "batch_index": idx_in_batch,
+                        "text": text,
+                    }
+                )
+
+            # Si tous les segments du batch sont vides, on passe au suivant
+            if not batch_items:
+                for segment in batch:
+                    enriched_segments.append(segment)
+                continue
+
+            # Construire un prompt compact pour tout le batch
+            # On demande une réponse JSON structurée pour faciliter le parsing.
+            instructions = (
+                f"{SEGMENT_CORRECTION_BASE_PROMPT}\n\n"
+                "Tu vas corriger plusieurs segments NUMÉROTÉS.\n"
+                "Pour chaque segment, retourne UNIQUEMENT le texte corrigé dans un objet JSON.\n"
+                "Format de réponse STRICT :\n"
+                '{ "segments": [ { "id": <index_segment>, "text": "texte corrigé" }, ... ] }\n'
+                "Ne retourne rien d'autre que ce JSON."
+            )
+
+            segments_block_lines = []
+            for item in batch_items:
+                segments_block_lines.append(f"[{item['batch_index']}] {item['text']}")
+            segments_block = "\n".join(segments_block_lines)
+
+            prompt = (
+                f"{instructions}\n\n"
+                f"{SEGMENT_CORRECTION_TASK_PROMPT}\n\n"
+                f"SEGMENTS À CORRIGER :\n{segments_block}\n"
+            )
+
+            # Estimation simple de la taille max de sortie (somme des tokens des textes)
+            total_words = sum(len(item["text"].split()) for item in batch_items)
+            max_tokens_for_batch = min(512, max(100, int(total_words * 1.2)))
+
+            try:
+                response = self._generate_text(
+                    prompt,
+                    max_tokens=max_tokens_for_batch,
+                    temperature=0.05,
+                    stop_tokens=["</s>", "<|end|>", "<|user|>", "<|system|>", "<|assistant|>", "\n\n\n"],
+                )
+            except Exception as e:
+                logger.error(f"❌ Error generating batch enrichment: {e}", exc_info=True)
+                # En cas d'erreur, on retombe sur le mode unitaire pour ce batch
+                for segment in batch:
+                    text = segment.get("text", "").strip()
+                    if not text:
+                        enriched_segments.append(segment)
+                        continue
+
+                    single_prompt = (
+                        f"{SEGMENT_CORRECTION_BASE_PROMPT}\n\n"
+                        f"{SEGMENT_CORRECTION_TASK_PROMPT}\n\n"
+                        f"Texte:\n{text}"
+                    )
+                    estimated_tokens = len(text.split())
+                    max_tokens_for_text = min(256, max(50, int(estimated_tokens * 1.2)))
+
+                    enriched_text = self._generate_text(
+                        single_prompt,
+                        max_tokens=max_tokens_for_text,
+                        temperature=0.05,
+                        stop_tokens=["</s>", "<|end|>", "<|user|>", "<|system|>", "<|assistant|>", "\n\n\n"],
+                    )
+                    if not enriched_text:
+                        enriched_text = text
+                    else:
+                        length_ratio = len(enriched_text) / len(text) if len(text) > 0 else 1.0
+                        if length_ratio > 1.5 or length_ratio < 0.5:
+                            logger.warning(
+                                "⚠️ Model generated suspicious output in batch fallback (length mismatch: "
+                                f"input={len(text)} chars, output={len(enriched_text)} chars), "
+                                "returning original text"
+                            )
+                            enriched_text = text
+
+                    enriched_segment = segment.copy()
+                    enriched_segment["enriched_text"] = enriched_text
+                    enriched_segment["original_text"] = text
+                    enriched_segments.append(enriched_segment)
+
+                continue
+
+            # Tenter de parser la réponse JSON
+            corrected_by_id: Dict[int, str] = {}
+            if response:
+                try:
+                    start = response.find("{")
+                    end = response.rfind("}") + 1
+                    if start >= 0 and end > start:
+                        json_str = response[start:end]
+                        data = json.loads(json_str)
+                        for item in data.get("segments", []):
+                            try:
+                                seg_id = int(item.get("id"))
+                                seg_text = (item.get("text") or "").strip()
+                                if seg_text:
+                                    corrected_by_id[seg_id] = seg_text
+                            except Exception:
+                                continue
+                except Exception as json_error:
+                    logger.warning(f"⚠️ Failed to parse batch enrichment JSON: {json_error} | response snippet: {response[:200]}")
+
+            # Appliquer les corrections (en gardant les garde-fous sur la longueur)
+            for idx_in_batch, segment in enumerate(batch):
+                text = segment.get("text", "").strip()
+                if not text:
+                    enriched_segments.append(segment)
+                    continue
+
+                enriched_text = corrected_by_id.get(idx_in_batch, text)
+
+                if enriched_text != text:
+                    length_ratio = len(enriched_text) / len(text) if len(text) > 0 else 1.0
+                    if length_ratio > 1.5 or length_ratio < 0.5:
+                        logger.warning(
+                            "⚠️ Model generated suspicious output in batch mode (length mismatch: "
+                            f"input={len(text)} chars, output={len(enriched_text)} chars), "
+                            "returning original text"
+                        )
+                        enriched_text = text
+
+                enriched_segment = segment.copy()
+                enriched_segment["enriched_text"] = enriched_text
+                enriched_segment["original_text"] = text
+                enriched_segments.append(enriched_segment)
+
+        logger.info(f"✅ Enriched {len(enriched_segments)} segments in batch mode")
+        return enriched_segments
     
     def generate_metadata(self, text: str, task_type: str, prompts: Dict[str, str], max_tokens: int = 100) -> str:
         """
@@ -690,6 +895,121 @@ class EnrichmentService:
         """
         if not text or not text.strip():
             return ""
+    
+    def generate_full_metadata(self, transcription_text: str, prompts: Dict[str, str]) -> Dict:
+        """
+        Génère toutes les métadonnées en un seul appel LLM.
+
+        Structure de réponse attendue (JSON strict) :
+        {
+          "title": "Titre court",
+          "summary": "Résumé concis",
+          "satisfaction": { "score": 7 },
+          "bullet_points": ["point 1", "point 2", ...]
+        }
+
+        Args:
+            transcription_text: Texte complet de la transcription
+            prompts: Prompts personnalisés optionnels pour chaque champ
+
+        Returns:
+            dict: Métadonnées structurées (peut être vide en cas d'erreur)
+        """
+        if not transcription_text or not transcription_text.strip():
+            return {}
+
+        self._load_model()
+
+        # Construire des prompts courts (ou utiliser les prompts custom)
+        title_prompt = prompts.get("title") if prompts else DEFAULT_ENRICHMENT_PROMPTS.get("title", "")
+        summary_prompt = prompts.get("summary") if prompts else DEFAULT_ENRICHMENT_PROMPTS.get("summary", "")
+        satisfaction_prompt = prompts.get("satisfaction") if prompts else DEFAULT_ENRICHMENT_PROMPTS.get("satisfaction", "")
+        bullet_points_prompt = prompts.get("bullet_points") if prompts else DEFAULT_ENRICHMENT_PROMPTS.get("bullet_points", "")
+
+        system_instructions = (
+            "Tu es un assistant qui analyse des appels entre un client et un agent en français.\n"
+            "À partir de la transcription fournie, tu dois retourner un objet JSON STRICT avec le format suivant :\n"
+            '{\n'
+            '  "title": "titre très court (max 10 mots)",\n'
+            '  "summary": "résumé concis (max 50 mots)",\n'
+            '  "satisfaction": { "score": nombre_entre_1_et_10 },\n'
+            '  "bullet_points": ["point 1", "point 2", ...]\n'
+            '}\n'
+            "Ne retourne STRICTEMENT RIEN d'autre que ce JSON.\n"
+        )
+
+        # On rappelle brièvement la consigne spécifique de chaque champ pour guider le modèle
+        meta_instructions = (
+            f"Titre : {title_prompt}\n"
+            f"Résumé : {summary_prompt}\n"
+            f"Satisfaction : {satisfaction_prompt}\n"
+            f"Points clés : {bullet_points_prompt}\n"
+        )
+
+        full_prompt = (
+            f"{system_instructions}\n"
+            f"{meta_instructions}\n"
+            "TRANSCRIPTION COMPLÈTE :\n"
+            f"{transcription_text}\n"
+        )
+
+        # Estimer un max_tokens raisonnable (résumé + bullet points)
+        # Le JSON restera relativement court même pour de longues transcriptions.
+        max_tokens = 256
+
+        response = self._generate_text(
+            full_prompt,
+            max_tokens=max_tokens,
+            temperature=0.3,  # Plus bas pour un comportement déterministe et structuré
+        )
+
+        if not response:
+            return {}
+
+        # Essayer d'extraire et de parser le JSON
+        try:
+            start = response.find("{")
+            end = response.rfind("}") + 1
+            if start < 0 or end <= start:
+                logger.warning(f"⚠️ Full metadata response does not contain JSON: {response[:200]}")
+                return {}
+
+            json_str = response[start:end]
+            data = json.loads(json_str)
+
+            # Normalisation / garde-fous
+            title = str(data.get("title", "") or "").strip()
+            summary = str(data.get("summary", "") or "").strip()
+            satisfaction = data.get("satisfaction") or {}
+            if isinstance(satisfaction, dict):
+                score = satisfaction.get("score", 5)
+            else:
+                # Si le modèle renvoie un score brut (ex: 7)
+                try:
+                    score = int(satisfaction)
+                except Exception:
+                    score = 5
+            try:
+                score_int = int(score)
+            except Exception:
+                score_int = 5
+            score_int = max(1, min(10, score_int))
+
+            bullet_points = data.get("bullet_points") or []
+            if not isinstance(bullet_points, list):
+                bullet_points = []
+            # Nettoyer les points
+            bullet_points = [str(p).strip() for p in bullet_points if p and str(p).strip()]
+
+            return {
+                "title": title,
+                "summary": summary,
+                "satisfaction": {"score": score_int},
+                "bullet_points": bullet_points,
+            }
+        except Exception as e:
+            logger.error(f"❌ Error parsing full metadata JSON: {e} | response snippet: {response[:200]}", exc_info=True)
+            return {}
         
         try:
             self._load_model()
