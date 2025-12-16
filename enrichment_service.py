@@ -968,26 +968,51 @@ class EnrichmentService:
 
         # Essayer d'extraire et de parser le JSON
         start = response.find("{")
-        end = response.rfind("}") + 1
-        if start < 0 or end <= start:
+        if start < 0:
             logger.warning(f"⚠️ Full metadata response does not contain JSON: {response[:200]}")
             return {}
 
-        json_str = response[start:end]
+        # Trouver la fin du JSON en comptant les accolades (plus robuste que rfind)
+        # Cela permet de gérer les cas où il y a des objets imbriqués
+        brace_count = 0
+        end = start
+        for i in range(start, len(response)):
+            if response[i] == '{':
+                brace_count += 1
+            elif response[i] == '}':
+                brace_count -= 1
+                if brace_count == 0:
+                    end = i + 1
+                    break
+        
+        # Si on n'a pas trouvé de fermeture complète, le JSON est tronqué
+        # On utilisera directement les regex de fallback
+        if brace_count != 0:
+            logger.warning(
+                f"⚠️ JSON appears to be truncated (unclosed braces: {brace_count}). "
+                f"Response length: {len(response)} chars. Will use regex fallback extraction."
+            )
+            # Passer directement au fallback regex (on ne fait pas de json.loads)
+            json_str = None
+        else:
+            json_str = response[start:end]
 
         data: Dict = {}
         try:
+            if json_str is None:
+                # JSON tronqué, on force l'exception pour utiliser le fallback
+                raise ValueError("JSON truncated - using regex fallback")
             data = json.loads(json_str)
         except Exception as e:
             # Certains modèles (comme Qwen) peuvent générer un JSON presque valide mais
             # avec une virgule manquante ou une ligne tronquée. On tente alors une
             # extraction plus robuste champ par champ via des regex.
+            json_str_info = f"Extracted JSON string length: {len(json_str)} chars | Extracted JSON string: {json_str}" if json_str else "JSON was truncated, using regex fallback"
             logger.error(
                 f"❌ Error parsing full metadata JSON: {e} | "
                 f"Full response length: {len(response)} chars | "
                 f"Full response: {response} | "
-                f"Extracted JSON string length: {len(json_str)} chars | "
-                f"Extracted JSON string: {json_str}",
+                f"{json_str_info}",
                 exc_info=True,
             )
 
@@ -1010,10 +1035,19 @@ class EnrichmentService:
                     score_int = 5
 
             # Extraction des bullet points (liste simple de chaînes)
+            # Gère aussi les cas où la liste est tronquée (pas de ] final)
             bullet_points: List[str] = []
-            bullets_block_match = re.search(r'"bullet_points"\s*:\s*\[(.*?)\]', response, re.DOTALL)
-            if bullets_block_match:
-                raw_block = bullets_block_match.group(1)
+            # Chercher "bullet_points": [ suivi de contenu (même si pas fermé)
+            bullets_start_match = re.search(r'"bullet_points"\s*:\s*\[', response)
+            if bullets_start_match:
+                start_pos = bullets_start_match.end()
+                # Chercher la fin de la liste (] ou fin de la réponse si tronquée)
+                end_pos = response.find(']', start_pos)
+                if end_pos < 0:
+                    # Liste tronquée, prendre jusqu'à la fin de la réponse
+                    end_pos = len(response)
+                
+                raw_block = response[start_pos:end_pos]
                 # Capturer toutes les chaînes entre guillemets dans le bloc
                 for m in re.finditer(r'"([^"]+)"', raw_block):
                     pt = m.group(1).strip()
