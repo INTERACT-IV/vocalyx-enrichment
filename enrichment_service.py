@@ -946,11 +946,27 @@ class EnrichmentService:
             f"Points clés : {bullet_points_prompt}\n"
         )
 
+        # Limiter la transcription à un échantillon pour éviter de dépasser le contexte disponible.
+        # Estimation : ~4 tokens par caractère en français, donc 2000 caractères ≈ 500 tokens.
+        # Avec n_ctx=1536, on garde ~1000 tokens pour la réponse (600 max_tokens + marge).
+        # Pour les métadonnées, on n'a pas besoin de la transcription complète.
+        max_transcription_chars = 2000
+        transcription_sample = (
+            transcription_text[:max_transcription_chars] 
+            if len(transcription_text) > max_transcription_chars 
+            else transcription_text
+        )
+        if len(transcription_text) > max_transcription_chars:
+            logger.debug(
+                f"Transcription truncated from {len(transcription_text)} to {max_transcription_chars} chars "
+                f"for full metadata generation (context limit: {self.n_ctx} tokens)"
+            )
+
         full_prompt = (
             f"{system_instructions}\n"
             f"{meta_instructions}\n"
-            "TRANSCRIPTION COMPLÈTE :\n"
-            f"{transcription_text}\n"
+            "TRANSCRIPTION :\n"
+            f"{transcription_sample}\n"
         )
 
         # Estimer un max_tokens raisonnable pour générer tous les champs.
@@ -978,13 +994,25 @@ class EnrichmentService:
         else:
             json_stop_tokens = ["</s>", "<|im_end|>", "<|im_start|>"]
 
+        # Estimation approximative de la taille du prompt en tokens (pour diagnostic)
+        # ~4 caractères par token en français en moyenne
+        prompt_approx_tokens = len(full_prompt) // 4
+        logger.debug(
+            f"Full metadata generation | Prompt length: {len(full_prompt)} chars (~{prompt_approx_tokens} tokens) | "
+            f"Context size: {self.n_ctx} tokens | Max response tokens: {max_tokens} | "
+            f"Available for response: ~{self.n_ctx - prompt_approx_tokens} tokens"
+        )
+
         response = self._generate_text(
             full_prompt,
             max_tokens=max_tokens,
             temperature=0.3,  # Plus bas pour un comportement déterministe et structuré
             stop_tokens=json_stop_tokens,  # Stop tokens minimaux (sans \n\n\n)
         )
-        logger.info(f"✅ Full metadata response: {response}")
+        logger.info(
+            f"✅ Full metadata response: {response[:300]}{'...' if len(response) > 300 else ''} "
+            f"(length: {len(response)} chars)"
+        )
 
         if not response:
             return {}
