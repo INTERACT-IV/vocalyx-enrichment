@@ -1107,7 +1107,7 @@ def aggregate_enrichment_chunks_task(self, transcription_id: str):
         # 4. Bullet points
         try:
             start = time.time()
-                response = enrichment_service.generate_metadata(enriched_text, "bullet_points", final_prompts, max_tokens=200)
+            response = enrichment_service.generate_metadata(enriched_text, "bullet_points", final_prompts, max_tokens=200)
             bullet_points_time = round(time.time() - start, 2)
             bullet_points = None
             if response and response.strip():
