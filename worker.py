@@ -1058,73 +1058,73 @@ def aggregate_enrichment_chunks_task(self, transcription_id: str):
         # 1–4. Fallback : génération séquentielle si le single-call n'a rien renvoyé
         if not metadata_result:
             logger.info(f"[{transcription_id}] ℹ️ Falling back to multi-call metadata generation...")
-
-            # 1. Titre
-            try:
-                start = time.time()
-                response = enrichment_service.generate_metadata(enriched_text, "title", final_prompts, max_tokens=50)
-                title = response.strip() if response else None
-                title_time = round(time.time() - start, 2)
-                if title:
-                    logger.info(f"[{transcription_id}] ✅ Title generated: {title[:50]}... ({title_time}s)")
-                    metadata_result['title'] = title
-            except Exception as e:
-                logger.warning(f"[{transcription_id}] ⚠️ Failed to generate title: {e}", exc_info=True)
-                metadata_result['title'] = None
-            
-            # 2. Résumé
-            try:
-                start = time.time()
-                response = enrichment_service.generate_metadata(enriched_text, "summary", final_prompts, max_tokens=150)
-                summary = response.strip() if response else None
-                summary_time = round(time.time() - start, 2)
-                if summary:
-                    logger.info(f"[{transcription_id}] ✅ Summary generated: {summary[:100]}... ({summary_time}s)")
-                    metadata_result['summary'] = summary
-            except Exception as e:
-                logger.warning(f"[{transcription_id}] ⚠️ Failed to generate summary: {e}", exc_info=True)
-                metadata_result['summary'] = None
-            
-            # 3. Score de satisfaction
-            try:
-                start = time.time()
-                response = enrichment_service.generate_metadata(enriched_text, "satisfaction", final_prompts, max_tokens=100)
-                satisfaction_time = round(time.time() - start, 2)
-                satisfaction = None
-                if response and response.strip():
-                    try:
-                        satisfaction = json.loads(response.strip())
-                    except Exception as json_error:
-                        logger.warning(f"[{transcription_id}] ⚠️ Failed to parse satisfaction JSON: {json_error}, using fallback")
-                        satisfaction = {"score": None, "justification": response.strip()}
-                if satisfaction:
-                    logger.info(f"[{transcription_id}] ✅ Satisfaction score generated: {satisfaction} ({satisfaction_time}s)")
-                    metadata_result['satisfaction'] = satisfaction
-            except Exception as e:
-                logger.warning(f"[{transcription_id}] ⚠️ Failed to generate satisfaction: {e}", exc_info=True)
-                metadata_result['satisfaction'] = None
-            
-            # 4. Bullet points
-            try:
-                start = time.time()
+        
+        # 1. Titre
+        try:
+            start = time.time()
+            response = enrichment_service.generate_metadata(enriched_text, "title", final_prompts, max_tokens=50)
+            title = response.strip() if response else None
+            title_time = round(time.time() - start, 2)
+            if title:
+                logger.info(f"[{transcription_id}] ✅ Title generated: {title[:50]}... ({title_time}s)")
+                metadata_result['title'] = title
+        except Exception as e:
+            logger.warning(f"[{transcription_id}] ⚠️ Failed to generate title: {e}", exc_info=True)
+            metadata_result['title'] = None
+        
+        # 2. Résumé
+        try:
+            start = time.time()
+            response = enrichment_service.generate_metadata(enriched_text, "summary", final_prompts, max_tokens=150)
+            summary = response.strip() if response else None
+            summary_time = round(time.time() - start, 2)
+            if summary:
+                logger.info(f"[{transcription_id}] ✅ Summary generated: {summary[:100]}... ({summary_time}s)")
+                metadata_result['summary'] = summary
+        except Exception as e:
+            logger.warning(f"[{transcription_id}] ⚠️ Failed to generate summary: {e}", exc_info=True)
+            metadata_result['summary'] = None
+        
+        # 3. Score de satisfaction
+        try:
+            start = time.time()
+            response = enrichment_service.generate_metadata(enriched_text, "satisfaction", final_prompts, max_tokens=100)
+            satisfaction_time = round(time.time() - start, 2)
+            satisfaction = None
+            if response and response.strip():
+                try:
+                    satisfaction = json.loads(response.strip())
+                except Exception as json_error:
+                    logger.warning(f"[{transcription_id}] ⚠️ Failed to parse satisfaction JSON: {json_error}, using fallback")
+                    satisfaction = {"score": None, "justification": response.strip()}
+            if satisfaction:
+                logger.info(f"[{transcription_id}] ✅ Satisfaction score generated: {satisfaction} ({satisfaction_time}s)")
+                metadata_result['satisfaction'] = satisfaction
+        except Exception as e:
+            logger.warning(f"[{transcription_id}] ⚠️ Failed to generate satisfaction: {e}", exc_info=True)
+            metadata_result['satisfaction'] = None
+        
+        # 4. Bullet points
+        try:
+            start = time.time()
                 response = enrichment_service.generate_metadata(enriched_text, "bullet_points", final_prompts, max_tokens=200)
-                bullet_points_time = round(time.time() - start, 2)
-                bullet_points = None
-                if response and response.strip():
-                    try:
-                        bullet_points = json.loads(response.strip())
-                    except Exception as json_error:
-                        logger.warning(f"[{transcription_id}] ⚠️ Failed to parse bullet points JSON: {json_error}, using fallback")
-                        bullet_points = {"points": [response.strip()]}
-                if bullet_points:
-                    logger.info(f"[{transcription_id}] ✅ Bullet points generated: {len(bullet_points.get('points', []))} points ({bullet_points_time}s)")
-                    metadata_result['bullet_points'] = bullet_points
-            except Exception as e:
-                logger.warning(f"[{transcription_id}] ⚠️ Failed to generate bullet points: {e}", exc_info=True)
-                metadata_result['bullet_points'] = None
-
-            metadata_time = round(time.time() - metadata_start_time, 2)
-            logger.info(f"[{transcription_id}] ✅ Metadata generation completed | Total time: {metadata_time}s")
+            bullet_points_time = round(time.time() - start, 2)
+            bullet_points = None
+            if response and response.strip():
+                try:
+                    bullet_points = json.loads(response.strip())
+                except Exception as json_error:
+                    logger.warning(f"[{transcription_id}] ⚠️ Failed to parse bullet points JSON: {json_error}, using fallback")
+                    bullet_points = {"points": [response.strip()]}
+            if bullet_points:
+                logger.info(f"[{transcription_id}] ✅ Bullet points generated: {len(bullet_points.get('points', []))} points ({bullet_points_time}s)")
+                metadata_result['bullet_points'] = bullet_points
+        except Exception as e:
+            logger.warning(f"[{transcription_id}] ⚠️ Failed to generate bullet points: {e}", exc_info=True)
+            metadata_result['bullet_points'] = None
+        
+        metadata_time = round(time.time() - metadata_start_time, 2)
+        logger.info(f"[{transcription_id}] ✅ Metadata generation completed | Total time: {metadata_time}s")
         
         # Construire l'objet enhanced_data avec les métadonnées
         enhanced_data = {

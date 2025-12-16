@@ -953,9 +953,14 @@ class EnrichmentService:
             f"{transcription_text}\n"
         )
 
-        # Estimer un max_tokens raisonnable (résumé + bullet points)
-        # Le JSON restera relativement court même pour de longues transcriptions.
-        max_tokens = 256
+        # Estimer un max_tokens raisonnable pour générer tous les champs.
+        # Comparaison avec les méthodes individuelles :
+        # - title: 30 tokens
+        # - summary: 150 tokens
+        # - satisfaction: 100 tokens
+        # - bullet_points: 200 tokens
+        # Total: ~480 tokens. On prend 600 pour avoir de la marge et éviter les troncatures.
+        max_tokens = 600
 
         response = self._generate_text(
             full_prompt,
@@ -1053,6 +1058,9 @@ class EnrichmentService:
                     pt = m.group(1).strip()
                     if pt:
                         bullet_points.append(pt)
+            
+            # Limiter à 4 bullet points (cohérent avec generate_bullet_points)
+            bullet_points = bullet_points[:4]
 
             # Même si le JSON complet est invalide, on renvoie ce qu'on a pu extraire
             return {
@@ -1083,8 +1091,9 @@ class EnrichmentService:
         bullet_points = data.get("bullet_points") or []
         if not isinstance(bullet_points, list):
             bullet_points = []
-        # Nettoyer les points
+        # Nettoyer les points et limiter à 4 (cohérent avec generate_bullet_points)
         bullet_points = [str(p).strip() for p in bullet_points if p and str(p).strip()]
+        bullet_points = bullet_points[:4]
 
         return {
             "title": title,
