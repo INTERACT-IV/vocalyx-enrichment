@@ -962,10 +962,27 @@ class EnrichmentService:
         # Total: ~480 tokens. On prend 600 pour avoir de la marge et éviter les troncatures.
         max_tokens = 600
 
+        # Pour la génération de JSON complet, on utilise seulement les stop tokens spécifiques au modèle
+        # (sans "\n\n\n" qui pourrait couper la génération prématurément dans un JSON formaté)
+        model_lower = self.model_name.lower()
+        if 'qwen' in model_lower:
+            json_stop_tokens = ["<|im_end|>", "<|endoftext|>"]
+        elif 'phi-3' in model_lower or 'phi3' in model_lower:
+            json_stop_tokens = ["<|end|>", "<|user|>", "<|system|>", "<|assistant|>"]
+        elif 'mistral' in model_lower:
+            json_stop_tokens = ["</s>", "[INST]", "[/INST]"]
+        elif 'llama-3' in model_lower or 'llama3' in model_lower:
+            json_stop_tokens = ["<|eot_id|>", "<|end_of_text|>"]
+        elif 'gemma' in model_lower:
+            json_stop_tokens = ["<end_of_text>", "<eos>"]
+        else:
+            json_stop_tokens = ["</s>", "<|im_end|>", "<|im_start|>"]
+
         response = self._generate_text(
             full_prompt,
             max_tokens=max_tokens,
             temperature=0.3,  # Plus bas pour un comportement déterministe et structuré
+            stop_tokens=json_stop_tokens,  # Stop tokens minimaux (sans \n\n\n)
         )
 
         if not response:
@@ -1058,6 +1075,16 @@ class EnrichmentService:
                     pt = m.group(1).strip()
                     if pt:
                         bullet_points.append(pt)
+                
+                # Si on n'a rien trouvé mais qu'il y a du texte après le [, 
+                # c'est peut-être un bullet point incomplet (sans guillemet fermant)
+                if not bullet_points and raw_block.strip():
+                    # Chercher un guillemet ouvrant suivi de texte jusqu'à la fin
+                    incomplete_match = re.search(r'"([^"]*)$', raw_block)
+                    if incomplete_match:
+                        incomplete_pt = incomplete_match.group(1).strip()
+                        if incomplete_pt:
+                            bullet_points.append(incomplete_pt)
             
             # Limiter à 4 bullet points (cohérent avec generate_bullet_points)
             bullet_points = bullet_points[:4]
