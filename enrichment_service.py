@@ -967,49 +967,93 @@ class EnrichmentService:
             return {}
 
         # Essayer d'extraire et de parser le JSON
+        start = response.find("{")
+        end = response.rfind("}") + 1
+        if start < 0 or end <= start:
+            logger.warning(f"⚠️ Full metadata response does not contain JSON: {response[:200]}")
+            return {}
+
+        json_str = response[start:end]
+
+        data: Dict = {}
         try:
-            start = response.find("{")
-            end = response.rfind("}") + 1
-            if start < 0 or end <= start:
-                logger.warning(f"⚠️ Full metadata response does not contain JSON: {response[:200]}")
-                return {}
-
-            json_str = response[start:end]
             data = json.loads(json_str)
+        except Exception as e:
+            # Certains modèles (comme Qwen) peuvent générer un JSON presque valide mais
+            # avec une virgule manquante ou une ligne tronquée. On tente alors une
+            # extraction plus robuste champ par champ via des regex.
+            logger.error(
+                f"❌ Error parsing full metadata JSON: {e} | response snippet: {response[:200]}",
+                exc_info=True,
+            )
 
-            # Normalisation / garde-fous
-            title = str(data.get("title", "") or "").strip()
-            summary = str(data.get("summary", "") or "").strip()
-            satisfaction = data.get("satisfaction") or {}
-            if isinstance(satisfaction, dict):
-                score = satisfaction.get("score", 5)
-            else:
-                # Si le modèle renvoie un score brut (ex: 7)
+            # Extraction du titre
+            title_match = re.search(r'"title"\s*:\s*"([^"]*)"', response)
+            title = title_match.group(1).strip() if title_match else ""
+
+            # Extraction du résumé
+            summary_match = re.search(r'"summary"\s*:\s*"([^"]*)"', response)
+            summary = summary_match.group(1).strip() if summary_match else ""
+
+            # Extraction du score de satisfaction
+            score_int = 5
+            score_match = re.search(r'"satisfaction"\s*:\s*\{\s*"score"\s*:\s*([0-9]+)', response)
+            if score_match:
                 try:
-                    score = int(satisfaction)
+                    score_int = int(score_match.group(1))
+                    score_int = max(1, min(10, score_int))
                 except Exception:
-                    score = 5
-            try:
-                score_int = int(score)
-            except Exception:
-                score_int = 5
-            score_int = max(1, min(10, score_int))
+                    score_int = 5
 
-            bullet_points = data.get("bullet_points") or []
-            if not isinstance(bullet_points, list):
-                bullet_points = []
-            # Nettoyer les points
-            bullet_points = [str(p).strip() for p in bullet_points if p and str(p).strip()]
+            # Extraction des bullet points (liste simple de chaînes)
+            bullet_points: List[str] = []
+            bullets_block_match = re.search(r'"bullet_points"\s*:\s*\[(.*?)\]', response, re.DOTALL)
+            if bullets_block_match:
+                raw_block = bullets_block_match.group(1)
+                # Capturer toutes les chaînes entre guillemets dans le bloc
+                for m in re.finditer(r'"([^"]+)"', raw_block):
+                    pt = m.group(1).strip()
+                    if pt:
+                        bullet_points.append(pt)
 
+            # Même si le JSON complet est invalide, on renvoie ce qu'on a pu extraire
             return {
                 "title": title,
                 "summary": summary,
                 "satisfaction": {"score": score_int},
                 "bullet_points": bullet_points,
             }
-        except Exception as e:
-            logger.error(f"❌ Error parsing full metadata JSON: {e} | response snippet: {response[:200]}", exc_info=True)
-            return {}
+
+        # Normalisation / garde-fous (chemin JSON valide)
+        title = str(data.get("title", "") or "").strip()
+        summary = str(data.get("summary", "") or "").strip()
+        satisfaction = data.get("satisfaction") or {}
+        if isinstance(satisfaction, dict):
+            score = satisfaction.get("score", 5)
+        else:
+            # Si le modèle renvoie un score brut (ex: 7)
+            try:
+                score = int(satisfaction)
+            except Exception:
+                score = 5
+        try:
+            score_int = int(score)
+        except Exception:
+            score_int = 5
+        score_int = max(1, min(10, score_int))
+
+        bullet_points = data.get("bullet_points") or []
+        if not isinstance(bullet_points, list):
+            bullet_points = []
+        # Nettoyer les points
+        bullet_points = [str(p).strip() for p in bullet_points if p and str(p).strip()]
+
+        return {
+            "title": title,
+            "summary": summary,
+            "satisfaction": {"score": score_int},
+            "bullet_points": bullet_points,
+        }
         
         try:
             self._load_model()
