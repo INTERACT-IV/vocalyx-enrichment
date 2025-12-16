@@ -983,7 +983,11 @@ class EnrichmentService:
             # avec une virgule manquante ou une ligne tronquée. On tente alors une
             # extraction plus robuste champ par champ via des regex.
             logger.error(
-                f"❌ Error parsing full metadata JSON: {e} | response snippet: {response[:200]}",
+                f"❌ Error parsing full metadata JSON: {e} | "
+                f"Full response length: {len(response)} chars | "
+                f"Full response: {response} | "
+                f"Extracted JSON string length: {len(json_str)} chars | "
+                f"Extracted JSON string: {json_str}",
                 exc_info=True,
             )
 
