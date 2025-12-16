@@ -984,6 +984,7 @@ class EnrichmentService:
             temperature=0.3,  # Plus bas pour un comportement déterministe et structuré
             stop_tokens=json_stop_tokens,  # Stop tokens minimaux (sans \n\n\n)
         )
+        logger.info(f"✅ Full metadata response: {response}")
 
         if not response:
             return {}
