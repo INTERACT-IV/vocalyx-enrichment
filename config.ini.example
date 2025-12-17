@@ -19,8 +19,8 @@ timeout = 60
 # Configuration Celery (DOIT correspondre à vocalyx-api)
 # En Docker: utiliser le nom de service (redis)
 # En local: utiliser localhost ou l'IP
-broker_url = redis://redis:6379/0
-result_backend = redis://redis:6379/0
+broker_url = redis://vocalyx-redis:6379/0
+result_backend = redis://vocalyx-redis:6379/0
 
 [REDIS_ENRICHMENT]
 # DB Redis dédiée pour les opérations d'enrichissement (isolation des données)
@@ -28,7 +28,7 @@ result_backend = redis://redis:6379/0
 # Format: redis://host:port/db_number
 # En Docker: utiliser le nom de service (redis)
 # En local: utiliser localhost ou l'IP
-url = redis://redis:6379/3
+url = redis://vocalyx-redis:6379/3
 
 # Compression des données JSON (réduit la mémoire et le réseau)
 # true: Compresse avec gzip (économise ~60-70% de mémoire)
