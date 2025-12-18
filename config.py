@@ -81,9 +81,7 @@ class Config:
             'colored': 'true'
         }
         
-        config['SECURITY'] = {
-            'internal_api_key': 'CHANGE_ME_SECRET_INTERNAL_KEY_12345'
-        }
+        config['SECURITY'] = {}
         
         with open(self.config_file, 'w') as f:
             config.write(f)
@@ -229,15 +227,6 @@ class Config:
             'ENRICHMENT_DISTRIBUTION_THRESHOLD',
             self.config.getint('PERFORMANCE', 'enrichment_distribution_threshold', fallback=10)
         ))
-        
-        # SECURITY
-        self.internal_api_key = os.environ.get(
-            'INTERNAL_API_KEY', 
-            self.config.get('SECURITY', 'internal_api_key', fallback='')
-        )
-        
-        if self.internal_api_key == 'CHANGE_ME_SECRET_INTERNAL_KEY_12345':
-            logger.warning("⚠️ SECURITY: Internal API key is using default value. Please change it!")
         
         # LOGGING
         self.log_level = os.environ.get(

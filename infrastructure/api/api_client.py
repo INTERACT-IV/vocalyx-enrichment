@@ -19,7 +19,6 @@ class VocalyxAPIClient:
     def __init__(self, config):
         # Utiliser api_url (cohérent avec transcription) avec fallback
         self.base_url = getattr(config, 'api_url', getattr(config, 'vocalyx_api_url', 'http://localhost:8000')).rstrip('/')
-        self.internal_key = getattr(config, 'internal_api_key', '')
         api_timeout = getattr(config, 'api_timeout', 60)
         self.timeout = httpx.Timeout(float(api_timeout), connect=5.0)
         
@@ -53,11 +52,8 @@ class VocalyxAPIClient:
             logger.error("⚠️ Worker will start but may fail to process tasks")
     
     def _get_headers(self) -> Dict[str, str]:
-        """Génère les headers d'authentification interne"""
-        # Utiliser X-Internal-Key pour cohérence avec transcription
-        return {
-            "X-Internal-Key": self.internal_key
-        }
+        """Génère les headers HTTP"""
+        return {}
     
     def get_transcription(self, transcription_id: str) -> Optional[Dict]:
         """

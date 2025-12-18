@@ -130,7 +130,3 @@ file_path = /app/logs/vocalyx-enrichment.log
 # Activer les couleurs dans la console
 colored = true
 
-[SECURITY]
-# Clé secrète pour la communication avec l'API (DOIT être identique à vocalyx-api)
-# ⚠️ CHANGER CETTE VALEUR EN PRODUCTION
-internal_api_key = SuperSecretCode123
